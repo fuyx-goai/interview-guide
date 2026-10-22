@@ -1,0 +1,3955 @@
+{
+  "文档名称": "面试宝典——按页面划分的后端接口设计",
+  "版本": "1.1.0",
+  "日期": "2026-10-22",
+  "状态": "按页面审查修订的建议接口契约，前后端尚未实现联调",
+  "分析依据": {
+    "文件": [
+      "src/main.js",
+      "package.json"
+    ],
+    "事实": "Vue 单页原型通过 page 条件切换页面，数据来自内存数组；未发现 HTTP 请求、服务端代码、SQL 或数据库模型。下述接口和表均为建议设计，不代表项目已有实现。",
+    "已实现前端交互": [
+      "简历本地上传与切换",
+      "固定文本模拟 AI 回答",
+      "公开题库本地筛选",
+      "手动或本地 Excel 解析后保存面试记录",
+      "面经列表与详情"
+    ],
+    "占位功能": [
+      "批量答题上传未绑定处理函数",
+      "批量模板按钮仅提示",
+      "补充问题按钮未绑定处理函数",
+      "设置输入未绑定保存数据",
+      "通知按钮未绑定行为"
+    ],
+    "原型偏差": [
+      "我的面经统计为固定数值，后端须从真实记录汇总",
+      "初始面经没有关联题目，详情回退使用公开题库切片；后端必须按 interview_id 查询真实关联题目",
+      "AI 自动识别目前固定为技术问题；后端须真正分类并记录分类状态",
+      "无简历时 activeResume 的调用存在空值风险，接口返回 null，由前端提示上传"
+    ]
+  },
+  "通用约定": {
+    "基础路径": "/api/v1",
+    "认证": "除另行说明外均要求 Authorization: Bearer <token>；身份从认证上下文提取，禁止客户端提交 user_id 决定资源归属。登录和注册页面未出现，本次不扩展认证接口。",
+    "编码": "UTF-8；默认 application/json；上传使用 multipart/form-data；下载返回二进制",
+    "字段描述格式": "字段定义使用 type、required、nullable、description、enum、minimum、maximum、items、ref；ref 引用本文数据模型。对象不允许未声明字段。required 表示该字段在所在请求或响应中必须出现，nullable 表示可为 null。 字符串使用minLength/maxLength，数组使用minItems/maxItems；default、format、uniqueItems同步导出为OpenAPI约束。",
+    "响应封装": {
+      "code": "业务码，成功为 OK",
+      "message": "提示文本",
+      "request_id": "链路追踪 ID",
+      "data": "接口业务返回值"
+    },
+    "示例约定": "各接口返回示例均展示完整响应；返回参数定义描述 data。下载接口例外。所有 ID 使用字符串，时间使用 ISO 8601 UTC，日期使用 YYYY-MM-DD；前端负责相对时间与本地日期展示。",
+    "错误响应示例": {
+      "code": "RESUME_NOT_READY",
+      "message": "当前简历尚未解析完成",
+      "request_id": "req_error_01",
+      "data": null
+    },
+    "HTTP状态": {
+      "200": "读取或更新成功",
+      "201": "资源创建成功",
+      "202": "异步任务已接受",
+      "400": "字段格式或表格内容错误",
+      "401": "未登录",
+      "403": "无权限",
+      "404": "资源不存在或不可见",
+      "409": "资源状态冲突、无生效简历或幂等键内容冲突",
+      "413": "文件超限",
+      "415": "文件类型不支持",
+      "422": "简历未就绪或题目无效",
+      "429": "调用频率或并发超限",
+      "503": "依赖服务暂不可用"
+    },
+    "分页": "列表使用 cursor 和 limit，limit 默认 20、最大 100；按 created_at DESC、id DESC 稳定排序，cursor 为不透明游标；返回 next_cursor=null 表示结束。首页摘要各最多 3 条。",
+    "幂等": "创建简历、创建 AI 回答、创建批量任务、保存面经与追加问题要求 Idempotency-Key 请求头。按用户、接口、键及请求内容摘要去重，保留 24 小时；相同键不同内容返回 409。",
+    "一致性": "简历激活切换及面经与题目写入使用事务；耗时 AI 任务通过事务内 outbox 可靠投递；所有 AI 任务在创建时固定 resume_version_id，避免切换简历污染处理中结果。",
+    "页面聚合": "页面首屏一次请求返回展示所需数据；筛选、翻页、上传、状态查询和用户主动提交属于独立交互。聚合读取采用固定数量批量查询，禁止逐条查公司、作者或题目造成 N+1。",
+    "文件规则": "简历支持 PDF、DOC、DOCX，最大 20 MiB；题目文件支持 XLS、XLSX、CSV，最大 10 MiB。服务端校验实际文件格式、大小及表头，禁止执行宏或公式；导出中以 =、+、-、@ 开头的文本按文本写入，防止表格公式注入。",
+    "题目限制": "建议每道题 1～4000 字，单次面经提交或批量任务最多 200 道；公司名 1～100 字。限制属于建议，需产品确认。",
+    "批注格式": "采用每个接口末尾的 批注 对象，保持文件为合法 JSON，不使用 // 注释。",
+    "不在范围": [
+      "简历删除",
+      "面经删除或编辑",
+      "通知列表与已读处理",
+      "多轮会话历史",
+      "人工审核后台"
+    ],
+    "需确认的业务口径": [
+      "公开分享以整场面经为粒度，所有题目统一公开；公开题数按公开题目统计",
+      "帮助人数按不同浏览用户去重，不等于浏览次数之和",
+      "薪资保留原始展示文本，不强制拆分数值",
+      "新增面经可选填写职位、日期，缺省职位为待补充、日期为用户时区当天",
+      "上传成功默认激活新简历，但 AI 使用前须解析成功",
+      "公开题目的查看回答按钮生成当前用户的个性化回答，回答不对其他人公开"
+    ],
+    "对象兼容性": "请求体拒绝未声明字段，additionalProperties=false；响应允许新增字段，前端忽略不认识的字段，必返字段不得缺失。缺省字段与显式null不同：只在声明nullable时接收null。",
+    "输入规范": "文字输入先trim再校验，禁止纯空白题目、姓名或公司名。可选city、salary未填写时省略，不能提交空字符串；响应相应字段为null。字符上限按Unicode码点计算。单场追加后总题数必须由服务端在事务内再次校验。",
+    "错误处理": "越权与不存在统一404，不泄露私人资源是否存在；401停止轮询并提示重新登录；429按Retry-After等待；503退避重试。请求级错误用各接口错误响应；HTTP200下的任务failed是业务终态，读取任务error_code，不能误当作HTTP失败。",
+    "业务决定状态": "本次沿用原型的个性化生成语义及现有level展示标签，不扩展公开标准答案或难度字段。200题、首页3条及浏览去重口径仍为建议默认，需产品确认；确认前按本文一致实现Mock。"
+  },
+  "数据模型": {
+    "UserSummary": {
+      "id": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "记录编号",
+        "字段注释": "服务端生成的唯一标识；作为字符串传输，前端不要转成数字。",
+        "description": "记录编号。服务端生成的唯一标识；作为字符串传输，前端不要转成数字。"
+      },
+      "name": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "显示名称",
+        "字段注释": "用于页面展示；个人资料中表示姓名，简历模型中表示原始文件名。",
+        "description": "显示名称。用于页面展示；个人资料中表示姓名，简历模型中表示原始文件名。"
+      },
+      "job_direction": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "求职方向",
+        "字段注释": "侧栏和设置页展示的岗位方向，例如Java后端开发。",
+        "description": "求职方向。侧栏和设置页展示的岗位方向，例如Java后端开发。"
+      }
+    },
+    "Resume": {
+      "id": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "记录编号",
+        "字段注释": "服务端生成的唯一标识；作为字符串传输，前端不要转成数字。",
+        "description": "记录编号。服务端生成的唯一标识；作为字符串传输，前端不要转成数字。"
+      },
+      "version_id": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "当前简历版本编号",
+        "字段注释": "指向当前使用的文件及解析内容；与简历本身的编号不同。",
+        "description": "当前简历版本编号。指向当前使用的文件及解析内容；与简历本身的编号不同。"
+      },
+      "name": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "显示名称",
+        "字段注释": "用于页面展示；个人资料中表示姓名，简历模型中表示原始文件名。",
+        "description": "显示名称。用于页面展示；个人资料中表示姓名，简历模型中表示原始文件名。"
+      },
+      "file_type": {
+        "type": "string",
+        "required": true,
+        "enum": [
+          "PDF",
+          "DOC",
+          "DOCX"
+        ],
+        "原始说明": "",
+        "字段说明": "简历文件类型",
+        "字段注释": "PDF、DOC、DOCX分别表示对应的文档格式，用于文件图标展示。",
+        "description": "简历文件类型。PDF、DOC、DOCX分别表示对应的文档格式，用于文件图标展示。"
+      },
+      "size_bytes": {
+        "type": "integer",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "文件大小",
+        "字段注释": "单位为字节，1024字节为1KiB；用于校验上传大小。",
+        "description": "文件大小。单位为字节，1024字节为1KiB；用于校验上传大小。"
+      },
+      "updated_at": {
+        "type": "string",
+        "required": true,
+        "description": "最后更新时间。使用UTC时间，前端换算成用户时区后展示为“2天前”等。 ISO 8601",
+        "原始说明": "ISO 8601",
+        "字段说明": "最后更新时间",
+        "字段注释": "使用UTC时间，前端换算成用户时区后展示为“2天前”等。 ISO 8601"
+      },
+      "tags": {
+        "type": "array",
+        "required": true,
+        "items": "string",
+        "原始说明": "",
+        "字段说明": "简历技术标签",
+        "字段注释": "从简历中提取的技能词，例如Java、Redis；解析前可以为空数组。",
+        "description": "简历技术标签。从简历中提取的技能词，例如Java、Redis；解析前可以为空数组。"
+      },
+      "is_active": {
+        "type": "boolean",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "是否为当前生效简历",
+        "字段注释": "true表示后续新建AI任务默认使用它；同一用户最多一份生效简历。",
+        "description": "是否为当前生效简历。true表示后续新建AI任务默认使用它；同一用户最多一份生效简历。"
+      },
+      "parse_status": {
+        "type": "string",
+        "required": true,
+        "enum": [
+          "pending",
+          "processing",
+          "succeeded",
+          "failed"
+        ],
+        "原始说明": "",
+        "字段说明": "简历解析状态",
+        "字段注释": "pending=等待解析，processing=解析中，succeeded=解析成功，failed=解析失败；只有成功的简历可用于AI回答。",
+        "description": "简历解析状态。pending=等待解析，processing=解析中，succeeded=解析成功，failed=解析失败；只有成功的简历可用于AI回答。"
+      },
+      "parse_error": {
+        "type": "string",
+        "required": true,
+        "nullable": true,
+        "原始说明": "",
+        "字段说明": "解析失败原因",
+        "字段注释": "解析成功或尚未失败时为null；失败时返回适合用户阅读的原因。",
+        "description": "解析失败原因。解析成功或尚未失败时为null；失败时返回适合用户阅读的原因。"
+      }
+    },
+    "Question": {
+      "id": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "记录编号",
+        "字段注释": "服务端生成的唯一标识；作为字符串传输，前端不要转成数字。",
+        "description": "记录编号。服务端生成的唯一标识；作为字符串传输，前端不要转成数字。"
+      },
+      "interview_id": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "所属面试记录编号",
+        "字段注释": "将题目与某一场面试关联，不能用其他面试的题目填充当前详情。",
+        "description": "所属面试记录编号。将题目与某一场面试关联，不能用其他面试的题目填充当前详情。"
+      },
+      "text": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "面试题内容",
+        "字段注释": "展示题干原文，不包含答案；保存时去掉首尾空白。",
+        "description": "面试题内容。展示题干原文，不包含答案；保存时去掉首尾空白。"
+      },
+      "category": {
+        "type": "string",
+        "required": true,
+        "enum": [
+          "technical",
+          "hr",
+          "unclassified"
+        ],
+        "原始说明": "",
+        "字段说明": "问题类别",
+        "字段注释": "technical=技术问题，hr=人资问题，unclassified=尚未分类。",
+        "description": "问题类别。technical=技术问题，hr=人资问题，unclassified=尚未分类。"
+      },
+      "level": {
+        "type": "string",
+        "required": true,
+        "enum": [
+          "frequent",
+          "advanced",
+          "common",
+          "unclassified"
+        ],
+        "description": "题目展示标签。frequent=高频，advanced=进阶，common=常见，unclassified=待分类；当前标签混合频率和难度。 原型混合频率与难度，暂作为展示标签，不用于严格难度统计",
+        "原始说明": "原型混合频率与难度，暂作为展示标签，不用于严格难度统计",
+        "字段说明": "题目展示标签",
+        "字段注释": "frequent=高频，advanced=进阶，common=常见，unclassified=待分类；当前标签混合频率和难度。 原型混合频率与难度，暂作为展示标签，不用于严格难度统计"
+      },
+      "classification_status": {
+        "type": "string",
+        "required": true,
+        "enum": [
+          "pending",
+          "succeeded",
+          "failed"
+        ],
+        "原始说明": "",
+        "字段说明": "自动分类处理状态",
+        "字段注释": "pending=等待识别，succeeded=识别完成，failed=识别失败；失败不影响已保存题目的查看。",
+        "description": "自动分类处理状态。pending=等待识别，succeeded=识别完成，failed=识别失败；失败不影响已保存题目的查看。"
+      },
+      "company": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "面试公司名称",
+        "字段注释": "用户填写的公司展示名，例如字节跳动；当前不依赖公司字典表。",
+        "description": "面试公司名称。用户填写的公司展示名，例如字节跳动；当前不依赖公司字典表。"
+      },
+      "city": {
+        "type": "string",
+        "required": true,
+        "nullable": true,
+        "原始说明": "",
+        "字段说明": "面试所在城市",
+        "字段注释": "例如北京；未填写时返回null，前端显示“未填写”。",
+        "description": "面试所在城市。例如北京；未填写时返回null，前端显示“未填写”。"
+      },
+      "salary": {
+        "type": "string",
+        "required": true,
+        "nullable": true,
+        "原始说明": "",
+        "字段说明": "薪资范围",
+        "字段注释": "保留用户输入文本，例如25–40K；未填写时返回null，不参与数值计算。",
+        "description": "薪资范围。保留用户输入文本，例如25–40K；未填写时返回null，不参与数值计算。"
+      },
+      "author_name": {
+        "type": "string",
+        "required": true,
+        "description": "发布者昵称。用于公开题目卡片展示，不返回发布者的邮箱、手机号或简历内容。 公开展示昵称",
+        "原始说明": "公开展示昵称",
+        "字段说明": "发布者昵称",
+        "字段注释": "用于公开题目卡片展示，不返回发布者的邮箱、手机号或简历内容。 公开展示昵称"
+      },
+      "views": {
+        "type": "integer",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "累计有效浏览次数",
+        "字段注释": "按每人每天同一道题最多一次计数，排除作者本人；不同于帮助人数。",
+        "description": "累计有效浏览次数。按每人每天同一道题最多一次计数，排除作者本人；不同于帮助人数。"
+      },
+      "created_at": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "创建时间",
+        "字段注释": "ISO 8601 UTC时间；列表使用创建时间与编号组合排序。",
+        "description": "创建时间。ISO 8601 UTC时间；列表使用创建时间与编号组合排序。"
+      }
+    },
+    "Interview": {
+      "id": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "记录编号",
+        "字段注释": "服务端生成的唯一标识；作为字符串传输，前端不要转成数字。",
+        "description": "记录编号。服务端生成的唯一标识；作为字符串传输，前端不要转成数字。"
+      },
+      "company": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "面试公司名称",
+        "字段注释": "用户填写的公司展示名，例如字节跳动；当前不依赖公司字典表。",
+        "description": "面试公司名称。用户填写的公司展示名，例如字节跳动；当前不依赖公司字典表。"
+      },
+      "role": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "面试岗位名称",
+        "字段注释": "例如后端开发工程师；当前弹窗没有输入框时默认“待补充职位”。",
+        "description": "面试岗位名称。例如后端开发工程师；当前弹窗没有输入框时默认“待补充职位”。"
+      },
+      "interview_date": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "实际面试日期",
+        "字段注释": "格式YYYY-MM-DD；未提交时取用户时区当天，不使用UTC日期直接替代。",
+        "description": "实际面试日期。格式YYYY-MM-DD；未提交时取用户时区当天，不使用UTC日期直接替代。"
+      },
+      "city": {
+        "type": "string",
+        "required": true,
+        "nullable": true,
+        "原始说明": "",
+        "字段说明": "面试所在城市",
+        "字段注释": "例如北京；未填写时返回null，前端显示“未填写”。",
+        "description": "面试所在城市。例如北京；未填写时返回null，前端显示“未填写”。"
+      },
+      "salary": {
+        "type": "string",
+        "required": true,
+        "nullable": true,
+        "原始说明": "",
+        "字段说明": "薪资范围",
+        "字段注释": "保留用户输入文本，例如25–40K；未填写时返回null，不参与数值计算。",
+        "description": "薪资范围。保留用户输入文本，例如25–40K；未填写时返回null，不参与数值计算。"
+      },
+      "status": {
+        "type": "string",
+        "required": true,
+        "enum": [
+          "recorded",
+          "second_round_completed",
+          "awaiting_result",
+          "closed"
+        ],
+        "原始说明": "",
+        "字段说明": "处理或业务状态",
+        "字段注释": "recorded=已记录，second_round_completed=二面完成，awaiting_result=等待结果，closed=已结束。",
+        "description": "处理或业务状态。recorded=已记录，second_round_completed=二面完成，awaiting_result=等待结果，closed=已结束。"
+      },
+      "is_public": {
+        "type": "boolean",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "是否公开分享题目",
+        "字段注释": "true允许其他用户在公开题库看到本场题目；不会公开简历或个性化答案。",
+        "description": "是否公开分享题目。true允许其他用户在公开题库看到本场题目；不会公开简历或个性化答案。"
+      },
+      "question_count": {
+        "type": "integer",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "题目总数",
+        "字段注释": "本场面试实际保存的题目数量，包含尚未自动分类的题目。",
+        "description": "题目总数。本场面试实际保存的题目数量，包含尚未自动分类的题目。"
+      }
+    },
+    "Answer": {
+      "id": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "记录编号",
+        "字段注释": "服务端生成的唯一标识；作为字符串传输，前端不要转成数字。",
+        "description": "记录编号。服务端生成的唯一标识；作为字符串传输，前端不要转成数字。"
+      },
+      "question_id": {
+        "type": "string",
+        "required": true,
+        "nullable": true,
+        "原始说明": "",
+        "字段说明": "来源题目编号",
+        "字段注释": "从题库或面经发起回答时使用；自由提问、文件题单生成的答案可为null。",
+        "description": "来源题目编号。从题库或面经发起回答时使用；自由提问、文件题单生成的答案可为null。"
+      },
+      "question_text": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "提问原文",
+        "字段注释": "自由提问直接提交文本；答案响应保存生成时的题干快照，避免来源变化影响追溯。",
+        "description": "提问原文。自由提问直接提交文本；答案响应保存生成时的题干快照，避免来源变化影响追溯。"
+      },
+      "resume_id": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "简历编号",
+        "字段注释": "标识一份逻辑简历，必须属于当前登录用户。",
+        "description": "简历编号。标识一份逻辑简历，必须属于当前登录用户。"
+      },
+      "resume_version_id": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "回答依据的简历版本编号",
+        "字段注释": "创建任务时固定，后续切换生效简历不会改变本任务的回答依据。",
+        "description": "回答依据的简历版本编号。创建任务时固定，后续切换生效简历不会改变本任务的回答依据。"
+      },
+      "status": {
+        "type": "string",
+        "required": true,
+        "enum": [
+          "queued",
+          "running",
+          "succeeded",
+          "failed"
+        ],
+        "原始说明": "",
+        "字段说明": "处理或业务状态",
+        "字段注释": "queued=排队中，running=生成中，succeeded=生成成功，failed=生成失败。",
+        "description": "处理或业务状态。queued=排队中，running=生成中，succeeded=生成成功，failed=生成失败。"
+      },
+      "content": {
+        "type": "string",
+        "required": true,
+        "nullable": true,
+        "原始说明": "",
+        "字段说明": "AI参考回答正文",
+        "字段注释": "生成成功后返回第一人称回答；排队、处理中或失败时允许为null。",
+        "description": "AI参考回答正文。生成成功后返回第一人称回答；排队、处理中或失败时允许为null。"
+      },
+      "suggestions": {
+        "type": "array",
+        "required": true,
+        "items": "string",
+        "原始说明": "",
+        "字段说明": "推荐问题或回答建议",
+        "字段注释": "咨询页是可直接点击提问的问题；答案模型中是帮助完善回答的建议。",
+        "description": "推荐问题或回答建议。咨询页是可直接点击提问的问题；答案模型中是帮助完善回答的建议。"
+      },
+      "error_code": {
+        "type": "string",
+        "required": true,
+        "nullable": true,
+        "原始说明": "",
+        "字段说明": "任务失败业务码",
+        "字段注释": "例如MODEL_TIMEOUT；未失败时为null，前端据此展示失败原因。",
+        "description": "任务失败业务码。例如MODEL_TIMEOUT；未失败时为null，前端据此展示失败原因。"
+      }
+    },
+    "BatchJob": {
+      "id": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "记录编号",
+        "字段注释": "服务端生成的唯一标识；作为字符串传输，前端不要转成数字。",
+        "description": "记录编号。服务端生成的唯一标识；作为字符串传输，前端不要转成数字。"
+      },
+      "file_name": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "题单文件名",
+        "字段注释": "用户上传的原始文件名，用于页面识别任务。",
+        "description": "题单文件名。用户上传的原始文件名，用于页面识别任务。"
+      },
+      "resume_id": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "简历编号",
+        "字段注释": "标识一份逻辑简历，必须属于当前登录用户。",
+        "description": "简历编号。标识一份逻辑简历，必须属于当前登录用户。"
+      },
+      "resume_version_id": {
+        "type": "string",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "回答依据的简历版本编号",
+        "字段注释": "创建任务时固定，后续切换生效简历不会改变本任务的回答依据。",
+        "description": "回答依据的简历版本编号。创建任务时固定，后续切换生效简历不会改变本任务的回答依据。"
+      },
+      "status": {
+        "type": "string",
+        "required": true,
+        "enum": [
+          "queued",
+          "running",
+          "succeeded",
+          "partial_failed",
+          "failed"
+        ],
+        "原始说明": "",
+        "字段说明": "处理或业务状态",
+        "字段注释": "queued=排队中，running=处理中，succeeded=全部成功，partial_failed=部分题目失败，failed=整份任务失败。",
+        "description": "处理或业务状态。queued=排队中，running=处理中，succeeded=全部成功，partial_failed=部分题目失败，failed=整份任务失败。"
+      },
+      "total": {
+        "type": "integer",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "全部项目数量",
+        "字段注释": "详情统计表示题目总数；批量任务表示有效题目总数。",
+        "description": "全部项目数量。详情统计表示题目总数；批量任务表示有效题目总数。"
+      },
+      "succeeded": {
+        "type": "integer",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "成功作答数量",
+        "字段注释": "成功生成答案的题目数，不能超过total。",
+        "description": "成功作答数量。成功生成答案的题目数，不能超过total。"
+      },
+      "failed": {
+        "type": "integer",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "失败作答数量",
+        "字段注释": "已经确定失败的题目数；未处理题目不计入失败数。",
+        "description": "失败作答数量。已经确定失败的题目数；未处理题目不计入失败数。"
+      },
+      "download_ready": {
+        "type": "boolean",
+        "required": true,
+        "原始说明": "",
+        "字段说明": "是否可以下载结果",
+        "字段注释": "只有结果文件生成并保存成功后为true；题目处理结束不代表文件已可下载。",
+        "description": "是否可以下载结果。只有结果文件生成并保存成功后为true；题目处理结束不代表文件已可下载。"
+      },
+      "error_code": {
+        "type": "string",
+        "required": true,
+        "nullable": true,
+        "原始说明": "",
+        "字段说明": "任务失败业务码",
+        "字段注释": "例如MODEL_TIMEOUT；未失败时为null，前端据此展示失败原因。",
+        "description": "任务失败业务码。例如MODEL_TIMEOUT；未失败时为null，前端据此展示失败原因。"
+      }
+    }
+  },
+  "页面模块": [
+    {
+      "模块": "首页",
+      "接口": [
+        {
+          "接口名称": "获取首页聚合数据",
+          "对应功能模块": "首页首屏、侧栏用户信息、当前简历、简历卡片、大家都在看",
+          "请求方式": "GET",
+          "路径": "/api/v1/pages/home",
+          "请求参数": {},
+          "返回参数": {
+            "user": {
+              "ref": "UserSummary",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "当前用户简要资料",
+              "字段注释": "一次返回侧栏和问候语所需信息，避免页面再单独查询用户资料。",
+              "description": "当前用户简要资料。一次返回侧栏和问候语所需信息，避免页面再单独查询用户资料。"
+            },
+            "active_resume": {
+              "ref": "Resume",
+              "required": true,
+              "nullable": true,
+              "原始说明": "",
+              "字段说明": "当前生效简历",
+              "字段注释": "包含文件名、版本和解析状态；用户未上传或未激活简历时为null。",
+              "description": "当前生效简历。包含文件名、版本和解析状态；用户未上传或未激活简历时为null。"
+            },
+            "resumes": {
+              "type": "array",
+              "items": {
+                "ref": "Resume"
+              },
+              "required": true,
+              "description": "首页简历卡片列表。最多返回3条，优先包含当前生效简历；完整列表在简历管理页分页查询。 最多3条，优先包含生效简历",
+              "原始说明": "最多3条，优先包含生效简历",
+              "字段说明": "首页简历卡片列表",
+              "字段注释": "最多返回3条，优先包含当前生效简历；完整列表在简历管理页分页查询。 最多3条，优先包含生效简历"
+            },
+            "public_questions": {
+              "type": "array",
+              "items": {
+                "ref": "Question"
+              },
+              "required": true,
+              "description": "首页公开题目推荐。最多返回3条真实公开题目，附带公司、城市、作者和浏览量。 最新公开题目，最多3条",
+              "原始说明": "最新公开题目，最多3条",
+              "字段说明": "首页公开题目推荐",
+              "字段注释": "最多返回3条真实公开题目，附带公司、城市、作者和浏览量。 最新公开题目，最多3条"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "成功",
+            "request_id": "req_home",
+            "data": {
+              "user": {
+                "id": "u1",
+                "name": "林知远",
+                "job_direction": "Java 后端开发"
+              },
+              "active_resume": {
+                "id": "r1",
+                "version_id": "rv1",
+                "name": "林知远_Java开发.pdf",
+                "file_type": "PDF",
+                "size_bytes": 102400,
+                "updated_at": "2026-10-22T02:00:00Z",
+                "tags": [
+                  "Java",
+                  "Spring Boot",
+                  "Redis"
+                ],
+                "is_active": true,
+                "parse_status": "succeeded",
+                "parse_error": null
+              },
+              "resumes": [
+                {
+                  "id": "r1",
+                  "version_id": "rv1",
+                  "name": "林知远_Java开发.pdf",
+                  "file_type": "PDF",
+                  "size_bytes": 102400,
+                  "updated_at": "2026-10-22T02:00:00Z",
+                  "tags": [
+                    "Java",
+                    "Spring Boot",
+                    "Redis"
+                  ],
+                  "is_active": true,
+                  "parse_status": "succeeded",
+                  "parse_error": null
+                }
+              ],
+              "public_questions": [
+                {
+                  "id": "q1",
+                  "interview_id": "i1",
+                  "text": "如何保证缓存一致性？",
+                  "category": "technical",
+                  "level": "advanced",
+                  "classification_status": "succeeded",
+                  "company": "字节跳动",
+                  "city": "北京",
+                  "salary": "25–40K",
+                  "author_name": "林同学",
+                  "views": 328,
+                  "created_at": "2026-10-22T02:00:00Z"
+                },
+                {
+                  "id": "q2",
+                  "interview_id": "i1",
+                  "text": "请介绍一次项目中遇到的挑战及解决过程。",
+                  "category": "hr",
+                  "level": "common",
+                  "classification_status": "succeeded",
+                  "company": "字节跳动",
+                  "city": "北京",
+                  "salary": "25–40K",
+                  "author_name": "林同学",
+                  "views": 185,
+                  "created_at": "2026-10-22T02:00:00Z"
+                }
+              ]
+            }
+          },
+          "批注": {
+            "设计思路": "用户打开首页时调用。页面同时需要姓名、生效简历、简历卡片和公开题目，所以一次返回这四块数据。这样用户不用等待多个请求陆续完成，也不会出现卡片已更新、简历提示却仍是旧值的情况。",
+            "实现逻辑": "1. 确认当前登录用户是谁，读取姓名和求职方向。\n2. 通过用户保存的生效简历编号找到简历，再读取它的当前版本和解析状态。\n3. 读取最多3份用户简历，以及最新3道公开题目；把公司和作者信息一起查出。\n4. 把四块数据放进同一个data返回；没有记录时返回空集合，不伪造统计或题目。",
+            "数据表": [
+              "users",
+              "user_settings",
+              "resumes",
+              "resume_versions",
+              "interviews",
+              "questions"
+            ],
+            "关联关系": "users.active_resume_id→resumes.id；resumes.current_version_id→resume_versions.id；questions.interview_id→interviews.id；interviews.user_id→users.id",
+            "表关系举例": "例如用户u1记录面经i1，再保存题目q1和q2：interviews.user_id=u1，questions.interview_id=i1。一场面试有多道题，每道题只属于一场面试；公开属性由面经统一决定。"
+          },
+          "请求示例": {},
+          "接入流程": [
+            "进入首页仅GET /api/v1/pages/home一次；分别绑定user、active_resume、resumes、public_questions，卡片关联信息已齐全，不再逐卡片补查。",
+            "active_resume是生效来源，null时显示“请先上传并选择简历”，禁止访问.name或回退选中列表第一项；非succeeded时展示等待、解析中或失败提示并禁用AI提交。",
+            "首页自由提问只传question_text创建回答，成功取得answer.id后切到咨询页继续同一任务；不再因进入咨询页重复POST。上传、切换或保存面经成功后使相关摘要失效。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "模块": "我的简历",
+      "接口": [
+        {
+          "接口名称": "获取简历管理页",
+          "对应功能模块": "当前生效横幅、简历列表、解析状态",
+          "请求方式": "GET",
+          "路径": "/api/v1/pages/resumes",
+          "请求参数": {
+            "cursor": {
+              "type": "string",
+              "required": false,
+              "原始说明": "",
+              "字段说明": "下一页查询游标",
+              "字段注释": "首次不传；翻页原样传上次返回的next_cursor；改变筛选条件后清空。",
+              "description": "下一页查询游标。首次不传；翻页原样传上次返回的next_cursor；改变筛选条件后清空。",
+              "example": "eyJpZCI6InExMCJ9",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "limit": {
+              "type": "integer",
+              "required": false,
+              "minimum": 1,
+              "maximum": 100,
+              "原始说明": "",
+              "字段说明": "每页条数",
+              "字段注释": "默认20，范围1～100；不控制首页固定3条摘要。",
+              "description": "每页条数。默认20，范围1～100；不控制首页固定3条摘要。",
+              "example": 20,
+              "default": 20
+            }
+          },
+          "返回参数": {
+            "active_resume": {
+              "ref": "Resume",
+              "required": true,
+              "nullable": true,
+              "原始说明": "",
+              "字段说明": "当前生效简历",
+              "字段注释": "包含文件名、版本和解析状态；用户未上传或未激活简历时为null。",
+              "description": "当前生效简历。包含文件名、版本和解析状态；用户未上传或未激活简历时为null。"
+            },
+            "items": {
+              "type": "array",
+              "required": true,
+              "items": {
+                "ref": "Resume"
+              },
+              "原始说明": "",
+              "字段说明": "当前页列表",
+              "字段注释": "元素结构见对应数据模型；有数据时返回对象数组，无数据时返回[]。",
+              "description": "当前页列表。元素结构见对应数据模型；有数据时返回对象数组，无数据时返回[]。"
+            },
+            "next_cursor": {
+              "type": "string",
+              "required": true,
+              "nullable": true,
+              "原始说明": "",
+              "字段说明": "下一页游标",
+              "字段注释": "为null表示已到最后一页，前端应停止加载更多。",
+              "description": "下一页游标。为null表示已到最后一页，前端应停止加载更多。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "成功",
+            "request_id": "req_resumes",
+            "data": {
+              "active_resume": {
+                "id": "r1",
+                "version_id": "rv1",
+                "name": "林知远_Java开发.pdf",
+                "file_type": "PDF",
+                "size_bytes": 102400,
+                "updated_at": "2026-10-22T02:00:00Z",
+                "tags": [
+                  "Java",
+                  "Spring Boot",
+                  "Redis"
+                ],
+                "is_active": true,
+                "parse_status": "succeeded",
+                "parse_error": null
+              },
+              "items": [
+                {
+                  "id": "r1",
+                  "version_id": "rv1",
+                  "name": "林知远_Java开发.pdf",
+                  "file_type": "PDF",
+                  "size_bytes": 102400,
+                  "updated_at": "2026-10-22T02:00:00Z",
+                  "tags": [
+                    "Java",
+                    "Spring Boot",
+                    "Redis"
+                  ],
+                  "is_active": true,
+                  "parse_status": "succeeded",
+                  "parse_error": null
+                }
+              ],
+              "next_cursor": null
+            }
+          },
+          "批注": {
+            "设计思路": "用户进入“我的简历”时调用。顶部要显示正在使用哪份简历，下方要列出其他简历，因此两部分一起返回。即使翻到下一页，顶部仍能展示当前简历。",
+            "实现逻辑": "1. 先确定用户正在使用的简历，读取文件名称和解析状态。\n2. 按用户编号查询本页简历，只读取用户自己的资料。\n3. 给每条简历补齐版本、技术标签和是否生效；生成下一页游标。\n4. 前端显示卡片；存在待解析文件时隔几秒刷新，全部解析结束后停止。",
+            "数据表": [
+              "users",
+              "resumes",
+              "resume_versions"
+            ],
+            "关联关系": "users 1:N resumes；resumes 1:N resume_versions；users.active_resume_id 指向唯一生效简历",
+            "表关系举例": "例如用户u1正在使用简历r1：users.active_resume_id=r1；简历r1的当前版本为rv1：resumes.current_version_id=rv1；resume_versions.resume_id=r1。先找用户，再找简历，最后找版本内容，三个编号代表不同层次。"
+          },
+          "请求示例": {
+            "limit": 20
+          },
+          "接入流程": [
+            "GET /api/v1/pages/resumes加载首屏；增加“加载更多”，首次不传cursor，后续传next_cursor并按ID追加去重；null时隐藏按钮。",
+            "上传成功后直接加入返回卡片，并同步唯一生效编号；解析状态pending/processing时每3秒刷新对应已加载页，按ID合并变化，不能用第一页覆盖已加载的其他页。",
+            "同时检查active_resume及全部已加载卡片的解析状态；隐藏页面暂停查询，全部终态停止。最长自动等待2分钟，超时显示“仍在处理，可手动刷新”，不把超时当作后台失败。",
+            "切换成功才更新共享生效项，失败保留旧选择；已创建回答保持原resume_version_id，不能改成新简历生成的答案。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            }
+          ]
+        },
+        {
+          "接口名称": "上传并激活简历",
+          "对应功能模块": "首页与我的简历的上传新简历",
+          "请求方式": "POST",
+          "路径": "/api/v1/resumes",
+          "内容类型": "multipart/form-data",
+          "请求参数": {
+            "file": {
+              "type": "binary",
+              "required": true,
+              "description": "上传文件。通过multipart/form-data的文件字段传输真实字节，不是本地路径字符串。 PDF/DOC/DOCX，最大20MiB",
+              "原始说明": "PDF/DOC/DOCX，最大20MiB",
+              "字段说明": "上传文件",
+              "字段注释": "通过multipart/form-data的文件字段传输真实字节，不是本地路径字符串。 PDF/DOC/DOCX，最大20MiB"
+            }
+          },
+          "返回参数": {
+            "resume": {
+              "ref": "Resume",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "本次上传的简历",
+              "字段注释": "返回新建简历的编号、文件信息、生效状态和解析进度，前端可直接新增卡片。",
+              "description": "本次上传的简历。返回新建简历的编号、文件信息、生效状态和解析进度，前端可直接新增卡片。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "已上传，等待解析",
+            "request_id": "req_upload",
+            "data": {
+              "resume": {
+                "id": "r1",
+                "version_id": "rv1",
+                "name": "林知远_Java开发.pdf",
+                "file_type": "PDF",
+                "size_bytes": 102400,
+                "updated_at": "2026-10-22T02:00:00Z",
+                "tags": [],
+                "is_active": true,
+                "parse_status": "pending",
+                "parse_error": null
+              }
+            }
+          },
+          "成功HTTP状态": 201,
+          "批注": {
+            "设计思路": "用户选择新简历后，页面希望立即看到新卡片并将它设为当前简历。文件保存与生效切换一次完成；简历内容解析可能较慢，放到后台处理，上传请求无需一直等待。",
+            "实现逻辑": "1. 检查实际文件类型和大小，拒绝超限或伪造类型的文件。\n2. 将原文件存到只有用户本人可以访问的文件存储中，保存文件记录。\n3. 在同一个数据库事务中创建简历及版本，更新用户的生效简历编号，并登记解析任务；任一步失败则撤销本次数据库写入。\n4. 立即返回pending状态；后台提取项目经历和技术标签，成功后改为succeeded，失败则记录原因。",
+            "数据表": [
+              "users",
+              "files",
+              "resumes",
+              "resume_versions",
+              "outbox_events",
+              "idempotency_records"
+            ],
+            "关联关系": "resumes.user_id→users.id；resume_versions.resume_id→resumes.id；resume_versions.file_id→files.id；users.active_resume_id→resumes.id",
+            "表关系举例": "例如用户u1正在使用简历r1：users.active_resume_id=r1；简历r1的当前版本为rv1：resumes.current_version_id=rv1；resume_versions.resume_id=r1。先找用户，再找简历，最后找版本内容，三个编号代表不同层次。"
+          },
+          "请求示例": {
+            "file": "林知远_Java开发.pdf（实际传文件字节）"
+          },
+          "接入流程": [
+            "GET /api/v1/pages/resumes加载首屏；增加“加载更多”，首次不传cursor，后续传next_cursor并按ID追加去重；null时隐藏按钮。",
+            "上传成功后直接加入返回卡片，并同步唯一生效编号；解析状态pending/processing时每3秒刷新对应已加载页，按ID合并变化，不能用第一页覆盖已加载的其他页。",
+            "同时检查active_resume及全部已加载卡片的解析状态；隐藏页面暂停查询，全部终态停止。最长自动等待2分钟，超时显示“仍在处理，可手动刷新”，不把超时当作后台失败。",
+            "切换成功才更新共享生效项，失败保留旧选择；已创建回答保持原resume_version_id，不能改成新简历生成的答案。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "IDEMPOTENCY_CONFLICT",
+              "message": "同一个幂等键不能提交不同内容",
+              "request_id": "req_idempotency_conflict",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "IDEMPOTENCY_IN_PROGRESS",
+              "message": "原请求仍在处理中，请使用同一幂等键稍后重试",
+              "request_id": "req_idempotency_in_progress",
+              "data": null
+            },
+            {
+              "http_status": 413,
+              "code": "FILE_TOO_LARGE",
+              "message": "上传文件超过允许大小",
+              "request_id": "req_file_too_large",
+              "data": null
+            },
+            {
+              "http_status": 415,
+              "code": "UNSUPPORTED_FILE_TYPE",
+              "message": "不支持该文件类型，请按页面提示选择文件",
+              "request_id": "req_unsupported_file_type",
+              "data": null
+            }
+          ]
+        },
+        {
+          "接口名称": "切换当前生效简历",
+          "对应功能模块": "首页与简历管理页点击简历卡片",
+          "请求方式": "PUT",
+          "路径": "/api/v1/me/active-resume",
+          "请求参数": {
+            "resume_id": {
+              "type": "string",
+              "required": true,
+              "位置": "body",
+              "原始说明": "",
+              "字段说明": "简历编号",
+              "字段注释": "标识一份逻辑简历，必须属于当前登录用户。",
+              "description": "简历编号。标识一份逻辑简历，必须属于当前登录用户。",
+              "example": "r1",
+              "minLength": 1
+            }
+          },
+          "返回参数": {
+            "active_resume_id": {
+              "type": "string",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "切换后的生效简历编号",
+              "字段注释": "前端用此编号更新所有卡片的选中状态，无须逐个请求保存。",
+              "description": "切换后的生效简历编号。前端用此编号更新所有卡片的选中状态，无须逐个请求保存。"
+            },
+            "resume_version_id": {
+              "type": "string",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "切换后的简历版本编号",
+              "字段注释": "表示新生效简历的当前版本；尚未解析成功时不能新建AI任务，已开始的任务继续引用原版本。",
+              "description": "切换后的简历版本编号。表示新生效简历的当前版本；尚未解析成功时不能新建AI任务，已开始的任务继续引用原版本。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "当前生效简历已切换",
+            "request_id": "req_activate",
+            "data": {
+              "active_resume_id": "r1",
+              "resume_version_id": "rv1"
+            }
+          },
+          "批注": {
+            "设计思路": "用户点击某张简历卡片，表示接下来生成的回答要使用它。只需修改用户“正在使用哪份简历”的编号，不必把所有简历逐个更新，也不会同时选中多份。",
+            "实现逻辑": "1. 校验目标简历存在且属于当前用户。\n2. 锁定当前用户记录，避免两个切换请求同时覆盖产生不确定结果，然后更新生效编号。\n3. 返回最终生效简历及版本编号，前端更新选中效果。\n4. 如果新简历还没解析完成，可以选中但暂不能提问；已经开始的回答继续使用创建时固定的版本。",
+            "数据表": [
+              "users",
+              "resumes",
+              "resume_versions"
+            ],
+            "关联关系": "users.active_resume_id→resumes.id，并要求 resumes.user_id=当前用户；不修改已有任务的版本引用",
+            "表关系举例": "例如用户u1正在使用简历r1：users.active_resume_id=r1；简历r1的当前版本为rv1：resumes.current_version_id=rv1；resume_versions.resume_id=r1。先找用户，再找简历，最后找版本内容，三个编号代表不同层次。"
+          },
+          "请求示例": {
+            "resume_id": "r1"
+          },
+          "接入流程": [
+            "GET /api/v1/pages/resumes加载首屏；增加“加载更多”，首次不传cursor，后续传next_cursor并按ID追加去重；null时隐藏按钮。",
+            "上传成功后直接加入返回卡片，并同步唯一生效编号；解析状态pending/processing时每3秒刷新对应已加载页，按ID合并变化，不能用第一页覆盖已加载的其他页。",
+            "同时检查active_resume及全部已加载卡片的解析状态；隐藏页面暂停查询，全部终态停止。最长自动等待2分钟，超时显示“仍在处理，可手动刷新”，不把超时当作后台失败。",
+            "切换成功才更新共享生效项，失败保留旧选择；已创建回答保持原resume_version_id，不能改成新简历生成的答案。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            },
+            {
+              "http_status": 404,
+              "code": "RESOURCE_NOT_FOUND",
+              "message": "记录不存在或当前用户不可见",
+              "request_id": "req_resource_not_found",
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "模块": "AI 面试咨询与查看回答弹窗",
+      "接口": [
+        {
+          "接口名称": "获取 AI 咨询页上下文",
+          "对应功能模块": "简历提示、推荐问题",
+          "请求方式": "GET",
+          "路径": "/api/v1/pages/consultation",
+          "请求参数": {},
+          "返回参数": {
+            "active_resume": {
+              "ref": "Resume",
+              "required": true,
+              "nullable": true,
+              "原始说明": "",
+              "字段说明": "当前生效简历",
+              "字段注释": "包含文件名、版本和解析状态；用户未上传或未激活简历时为null。",
+              "description": "当前生效简历。包含文件名、版本和解析状态；用户未上传或未激活简历时为null。"
+            },
+            "suggestions": {
+              "type": "array",
+              "required": true,
+              "items": "string",
+              "原始说明": "",
+              "字段说明": "推荐问题或回答建议",
+              "字段注释": "咨询页是可直接点击提问的问题；答案模型中是帮助完善回答的建议。",
+              "description": "推荐问题或回答建议。咨询页是可直接点击提问的问题；答案模型中是帮助完善回答的建议。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "成功",
+            "request_id": "req_consult",
+            "data": {
+              "active_resume": {
+                "id": "r1",
+                "version_id": "rv1",
+                "name": "林知远_Java开发.pdf",
+                "file_type": "PDF",
+                "size_bytes": 102400,
+                "updated_at": "2026-10-22T02:00:00Z",
+                "tags": [
+                  "Java",
+                  "Spring Boot",
+                  "Redis"
+                ],
+                "is_active": true,
+                "parse_status": "succeeded",
+                "parse_error": null
+              },
+              "suggestions": [
+                "如何保证缓存一致性？",
+                "介绍一下你的项目难点"
+              ]
+            }
+          },
+          "批注": {
+            "设计思路": "用户进入AI咨询页，需要知道“AI接下来参考哪份简历”，并看到几个可点击的推荐问题。这些是同一页的初始化内容，一次返回即可；推荐问题只是提问入口，不需要调用AI生成答案。",
+            "实现逻辑": "1. 从当前用户记录取得active_resume_id，例如r1。\n2. 用r1找到resumes记录，再用其current_version_id找到解析版本rv1，取得文件名和是否可用。\n3. 从服务端配置读取推荐问题，例如“如何保证缓存一致性？”，与简历一起返回。\n4. 前端展示“基于林知远_Java开发.pdf”；如果active_resume为null，则提示先上传简历，而不是直接读取不存在的文件名。",
+            "数据表": [
+              "users",
+              "resumes",
+              "resume_versions"
+            ],
+            "关联关系": "users.active_resume_id→resumes.id→resume_versions.id（current_version_id）",
+            "表关系举例": "例如用户u1正在使用简历r1：users.active_resume_id=r1；简历r1的当前版本为rv1：resumes.current_version_id=rv1；resume_versions.resume_id=r1。先找用户，再找简历，最后找版本内容，三个编号代表不同层次。"
+          },
+          "请求示例": {},
+          "接入流程": [
+            "咨询页GET /api/v1/pages/consultation获取当前简历与建议；自由提问只传question_text，题库或面经入口只传question_id，二者必须且只能传一个。",
+            "点击后立即显示生成中并禁用重复提交；POST成功记录answer.id，首次1秒后查询，随后2、4、5秒退避。queued/running继续，succeeded显示content和suggestions，failed显示error_code及重试按钮。",
+            "自动轮询最多2分钟，达到上限保留任务编号并提供“继续查询”，后台不被取消。401停止所有轮询；429或503延后重试；404终止并提示不可见。",
+            "点击“查看回答”先保留来源页并打开弹窗，只有点击“进入AI咨询”才跳转，同时带上现有任务编号，不重新创建答案。清空、关闭或换题时递增显示序号并停止旧轮询，只接收当前answer.id及显示序号匹配的响应。",
+            "每次有意生成新答案用新Idempotency-Key；网络重试沿用原键和内容。失败任务重试是新操作，用新键重新POST。succeeded的正文必须非空；非成功时content=null；failed时error_code必有值。",
+            "公开题目实际打开时可非阻塞POST浏览事件；面经详情仅interview.is_public=true时发送。浏览失败不影响回答，AI创建接口不再重复计数。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            }
+          ]
+        },
+        {
+          "接口名称": "创建个性化 AI 回答",
+          "对应功能模块": "首页提问、AI咨询发送、题库查看回答、面经详情AI生成回答",
+          "请求方式": "POST",
+          "路径": "/api/v1/ai/answers",
+          "请求参数": {
+            "question_id": {
+              "type": "string",
+              "required": false,
+              "位置": "body",
+              "description": "来源题目编号。与question_text必须且只能提交一个；提交时必须是非空字符串，不接受null；题目必须公开或属于当前用户。",
+              "原始说明": "题库或面经题目ID；与 question_text 二选一",
+              "字段说明": "来源题目编号",
+              "字段注释": "与question_text必须且只能提交一个；提交时必须是非空字符串，不接受null；题目必须公开或属于当前用户。",
+              "example": "q1",
+              "minLength": 1
+            },
+            "question_text": {
+              "type": "string",
+              "required": false,
+              "位置": "body",
+              "description": "提问原文。自由提问直接提交文本；答案响应保存生成时的题干快照，避免来源变化影响追溯。 自由提问，1～4000字；与 question_id 二选一",
+              "原始说明": "自由提问，1～4000字；与 question_id 二选一",
+              "字段说明": "提问原文",
+              "字段注释": "自由提问直接提交文本；答案响应保存生成时的题干快照，避免来源变化影响追溯。 自由提问，1～4000字；与 question_id 二选一",
+              "example": "如何保证缓存一致性？",
+              "minLength": 1,
+              "maxLength": 4000
+            }
+          },
+          "返回参数": {
+            "answer": {
+              "ref": "Answer",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "AI回答详情",
+              "字段注释": "同时包含状态、问题、依据简历、正文和建议。",
+              "description": "AI回答详情。同时包含状态、问题、依据简历、正文和建议。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "已开始生成",
+            "request_id": "req_ask",
+            "data": {
+              "answer": {
+                "id": "a1",
+                "question_id": "q1",
+                "question_text": "如何保证缓存一致性？",
+                "resume_id": "r1",
+                "resume_version_id": "rv1",
+                "status": "queued",
+                "content": null,
+                "suggestions": [],
+                "error_code": null
+              }
+            }
+          },
+          "成功HTTP状态": 202,
+          "批注": {
+            "设计思路": "首页提问、题库“查看回答”和面经“AI生成回答”做的都是同一件事：结合当前用户简历回答一道题，所以共用一个创建接口。AI耗时较长，先返回任务编号，页面显示“生成中”，再查询结果。",
+            "实现逻辑": "1. 自由提问传question_text；题库提问传question_id，两者只能选一个。使用题目编号时先检查题目是否公开或属于当前用户。\n2. 检查生效简历已解析成功，记录当前版本编号和题干快照，之后用户切换简历也不会影响这次回答。\n3. 创建仅当前用户可见的回答记录，并登记后台任务；重复提交同一幂等键时不重复生成。\n4. 后台根据真实项目经历组织回答，完成后保存正文和建议；模型超时或失败时保存错误码供页面提示。",
+            "数据表": [
+              "users",
+              "resumes",
+              "resume_versions",
+              "questions",
+              "interviews",
+              "ai_answers",
+              "outbox_events",
+              "idempotency_records"
+            ],
+            "关联关系": "ai_answers.user_id→users.id；ai_answers.resume_version_id→resume_versions.id；ai_answers.question_id→questions.id（可空）；版本所属 resume_id 随响应返回",
+            "表关系举例": "例如回答a1属于用户u1，使用简历r1的版本rv1；ai_answers.resume_version_id=rv1。用户改用r2后，a1仍可追溯到rv1，不会突然变成依据r2生成。"
+          },
+          "请求示例": {
+            "question_id": "q1"
+          },
+          "接入流程": [
+            "咨询页GET /api/v1/pages/consultation获取当前简历与建议；自由提问只传question_text，题库或面经入口只传question_id，二者必须且只能传一个。",
+            "点击后立即显示生成中并禁用重复提交；POST成功记录answer.id，首次1秒后查询，随后2、4、5秒退避。queued/running继续，succeeded显示content和suggestions，failed显示error_code及重试按钮。",
+            "自动轮询最多2分钟，达到上限保留任务编号并提供“继续查询”，后台不被取消。401停止所有轮询；429或503延后重试；404终止并提示不可见。",
+            "点击“查看回答”先保留来源页并打开弹窗，只有点击“进入AI咨询”才跳转，同时带上现有任务编号，不重新创建答案。清空、关闭或换题时递增显示序号并停止旧轮询，只接收当前answer.id及显示序号匹配的响应。",
+            "每次有意生成新答案用新Idempotency-Key；网络重试沿用原键和内容。失败任务重试是新操作，用新键重新POST。succeeded的正文必须非空；非成功时content=null；failed时error_code必有值。",
+            "公开题目实际打开时可非阻塞POST浏览事件；面经详情仅interview.is_public=true时发送。浏览失败不影响回答，AI创建接口不再重复计数。"
+          ],
+          "请求体约束": {
+            "oneOf": [
+              {
+                "required": [
+                  "question_id"
+                ]
+              },
+              {
+                "required": [
+                  "question_text"
+                ]
+              }
+            ]
+          },
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "IDEMPOTENCY_CONFLICT",
+              "message": "同一个幂等键不能提交不同内容",
+              "request_id": "req_idempotency_conflict",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "IDEMPOTENCY_IN_PROGRESS",
+              "message": "原请求仍在处理中，请使用同一幂等键稍后重试",
+              "request_id": "req_idempotency_in_progress",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "NO_ACTIVE_RESUME",
+              "message": "请先上传并选择生效简历",
+              "request_id": "req_no_active_resume",
+              "data": null
+            },
+            {
+              "http_status": 422,
+              "code": "RESUME_NOT_READY",
+              "message": "当前简历尚未解析成功，请等待解析或更换简历",
+              "request_id": "req_resume_not_ready",
+              "data": null
+            }
+          ]
+        },
+        {
+          "接口名称": "查询 AI 回答及生成状态",
+          "对应功能模块": "AI参考回答、回答建议、生成进度",
+          "请求方式": "GET",
+          "路径": "/api/v1/ai/answers/{answer_id}",
+          "请求参数": {
+            "answer_id": {
+              "type": "string",
+              "required": true,
+              "位置": "path",
+              "原始说明": "",
+              "字段说明": "AI回答任务编号",
+              "字段注释": "必填、非空的资源编号；按路径替换，不放入请求体，不接受null。",
+              "description": "AI回答任务编号。必填、非空的资源编号；按路径替换，不放入请求体，不接受null。",
+              "example": "a1",
+              "minLength": 1
+            }
+          },
+          "返回参数": {
+            "answer": {
+              "ref": "Answer",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "AI回答详情",
+              "字段注释": "同时包含状态、问题、依据简历、正文和建议。",
+              "description": "AI回答详情。同时包含状态、问题、依据简历、正文和建议。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "成功",
+            "request_id": "req_answer",
+            "data": {
+              "answer": {
+                "id": "a1",
+                "question_id": "q1",
+                "question_text": "如何保证缓存一致性？",
+                "resume_id": "r1",
+                "resume_version_id": "rv1",
+                "status": "succeeded",
+                "content": "在我的项目中，我把数据库作为订单状态的最终依据。更新订单时先提交数据库事务，再删除对应缓存；如果删除失败，则记录任务并重试。对允许短暂延迟的查询，我会配合缓存过期时间减少旧值长期存在的风险。对必须准确的状态判断，我会直接读取数据库。面试时我会结合实际项目说明并发更新可能出现的竞态，以及采用补偿方案的原因。",
+                "suggestions": [
+                  "补充真实项目中的读写量和一致性要求"
+                ],
+                "error_code": null
+              }
+            }
+          },
+          "批注": {
+            "设计思路": "页面已经有回答任务编号，需要知道答案是否生成完。一个响应同时返回处理状态、正文和改进建议，避免分别请求状态和内容。这个接口只取已有结果，不会再次触发模型生成。",
+            "实现逻辑": "1. 校验回答属于当前用户，不能读取其他人的个性化答案。\n2. 读取回答状态和内容；排队或处理中时正文为null。\n3. 成功后返回完整正文和建议；失败则返回failed及错误码。\n4. 页面在处理中短暂等待后再查，逐步拉长间隔；成功或失败就停止查询。",
+            "数据表": [
+              "ai_answers",
+              "resume_versions"
+            ],
+            "关联关系": "ai_answers.user_id限定读取权限；ai_answers.resume_version_id→resume_versions.id，用于追溯回答依据",
+            "表关系举例": "例如回答a1属于用户u1，使用简历r1的版本rv1；ai_answers.resume_version_id=rv1。用户改用r2后，a1仍可追溯到rv1，不会突然变成依据r2生成。"
+          },
+          "请求示例": {
+            "answer_id": "a1"
+          },
+          "接入流程": [
+            "咨询页GET /api/v1/pages/consultation获取当前简历与建议；自由提问只传question_text，题库或面经入口只传question_id，二者必须且只能传一个。",
+            "点击后立即显示生成中并禁用重复提交；POST成功记录answer.id，首次1秒后查询，随后2、4、5秒退避。queued/running继续，succeeded显示content和suggestions，failed显示error_code及重试按钮。",
+            "自动轮询最多2分钟，达到上限保留任务编号并提供“继续查询”，后台不被取消。401停止所有轮询；429或503延后重试；404终止并提示不可见。",
+            "点击“查看回答”先保留来源页并打开弹窗，只有点击“进入AI咨询”才跳转，同时带上现有任务编号，不重新创建答案。清空、关闭或换题时递增显示序号并停止旧轮询，只接收当前answer.id及显示序号匹配的响应。",
+            "每次有意生成新答案用新Idempotency-Key；网络重试沿用原键和内容。失败任务重试是新操作，用新键重新POST。succeeded的正文必须非空；非成功时content=null；failed时error_code必有值。",
+            "公开题目实际打开时可非阻塞POST浏览事件；面经详情仅interview.is_public=true时发送。浏览失败不影响回答，AI创建接口不再重复计数。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            },
+            {
+              "http_status": 404,
+              "code": "RESOURCE_NOT_FOUND",
+              "message": "记录不存在或当前用户不可见",
+              "request_id": "req_resource_not_found",
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "模块": "批量答题",
+      "接口": [
+        {
+          "接口名称": "获取批量答题页",
+          "对应功能模块": "生效简历、上传限制、最近任务和结果恢复",
+          "请求方式": "GET",
+          "路径": "/api/v1/pages/batch-answers",
+          "请求参数": {},
+          "返回参数": {
+            "active_resume": {
+              "ref": "Resume",
+              "required": true,
+              "nullable": true,
+              "原始说明": "",
+              "字段说明": "当前生效简历",
+              "字段注释": "包含文件名、版本和解析状态；用户未上传或未激活简历时为null。",
+              "description": "当前生效简历。包含文件名、版本和解析状态；用户未上传或未激活简历时为null。"
+            },
+            "upload_rules": {
+              "type": "object",
+              "required": true,
+              "properties": {
+                "extensions": {
+                  "type": "array",
+                  "items": "string",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "允许的文件扩展名",
+                  "字段注释": "xls、xlsx、csv；服务端仍须检查实际内容，不能只检查扩展名。",
+                  "description": "允许的文件扩展名。xls、xlsx、csv；服务端仍须检查实际内容，不能只检查扩展名。"
+                },
+                "max_bytes": {
+                  "type": "integer",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "文件大小上限",
+                  "字段注释": "单位字节；题单为10485760字节，即10MiB。",
+                  "description": "文件大小上限。单位字节；题单为10485760字节，即10MiB。"
+                },
+                "required_column": {
+                  "type": "string",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "必须存在的表头名称",
+                  "字段注释": "表格第一工作表中必须有“问题”列，空白问题行会被忽略。",
+                  "description": "必须存在的表头名称。表格第一工作表中必须有“问题”列，空白问题行会被忽略。"
+                },
+                "max_questions": {
+                  "type": "integer",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "单次有效题目上限",
+                  "字段注释": "建议200道，超过时拒绝创建任务，防止一次处理过多。",
+                  "description": "单次有效题目上限。建议200道，超过时拒绝创建任务，防止一次处理过多。"
+                }
+              },
+              "原始说明": "",
+              "字段说明": "服务端上传规则",
+              "字段注释": "页面据此展示支持格式、文件大小、表头和题目数量上限。",
+              "description": "服务端上传规则。页面据此展示支持格式、文件大小、表头和题目数量上限。"
+            },
+            "latest_job": {
+              "ref": "BatchJob",
+              "required": true,
+              "nullable": true,
+              "原始说明": "",
+              "字段说明": "当前用户最近一次批量任务",
+              "字段注释": "刷新页面后用它恢复进度；从未创建任务时为null。",
+              "description": "当前用户最近一次批量任务。刷新页面后用它恢复进度；从未创建任务时为null。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "成功",
+            "request_id": "req_batch_page",
+            "data": {
+              "active_resume": {
+                "id": "r1",
+                "version_id": "rv1",
+                "name": "林知远_Java开发.pdf",
+                "file_type": "PDF",
+                "size_bytes": 102400,
+                "updated_at": "2026-10-22T02:00:00Z",
+                "tags": [
+                  "Java",
+                  "Spring Boot",
+                  "Redis"
+                ],
+                "is_active": true,
+                "parse_status": "succeeded",
+                "parse_error": null
+              },
+              "upload_rules": {
+                "extensions": [
+                  "xls",
+                  "xlsx",
+                  "csv"
+                ],
+                "max_bytes": 10485760,
+                "required_column": "问题",
+                "max_questions": 200
+              },
+              "latest_job": {
+                "id": "b1",
+                "file_name": "后端面试题.xlsx",
+                "resume_id": "r1",
+                "resume_version_id": "rv1",
+                "status": "running",
+                "total": 2,
+                "succeeded": 1,
+                "failed": 0,
+                "download_ready": false,
+                "error_code": null
+              }
+            }
+          },
+          "批注": {
+            "设计思路": "用户打开批量答题页，需要看到参考简历、文件要求，以及上次任务是否还在进行。把这三部分一起返回，刷新页面后也能继续查看进度，而不是误以为必须重新上传。",
+            "实现逻辑": "1. 读取用户当前生效简历及解析状态。\n2. 从统一配置取得支持格式、最大文件大小、问题列表头和数量上限。\n3. 读取当前用户最近一份批量任务；从未上传则返回null。\n4. 前端据状态恢复上传、生成中或可下载的步骤提示；进行中的任务继续查询任务进度。",
+            "数据表": [
+              "users",
+              "resumes",
+              "resume_versions",
+              "batch_jobs"
+            ],
+            "关联关系": "batch_jobs.user_id→users.id；batch_jobs.resume_version_id→resume_versions.id",
+            "表关系举例": "例如用户u1上传题单形成任务b1，batch_jobs保存b1的上传文件和简历版本rv1；batch_job_items保存b1中每道题，answer_id对应ai_answers中的答案；结果生成后，b1的result_file_id指向files中的Excel文件。"
+          },
+          "请求示例": {},
+          "接入流程": [
+            "GET /api/v1/pages/batch-answers一次获取规则、当前简历与latest_job；先检查简历就绪，再POST原始文件创建任务，整个题单只创建一个任务。",
+            "页面需绑定文件选择及拖放事件，补齐处理中、成功、部分失败、失败和下载入口；POST返回后保存job.id，每2秒查询一次并逐步退避至10秒。",
+            "queued/running持续查询；最多自动等待10分钟，之后保留任务并提示手动刷新；隐藏页面暂停，重新进入用latest_job恢复。只查询任务，不逐题请求。",
+            "succeeded/partial_failed且download_ready=true才启用下载；全部失败时status=failed且download_ready=false。按任务实际resume_id和resume_version_id显示依据，不把当前生效简历当作旧任务依据。",
+            "统计遵循succeeded+failed<=total；全部终态时等于total。结果文件未准备好仍为running；文件生成失败则failed并记录错误。部分题目失败仍生成含错误原因的XLSX。",
+            "下载成功按Content-Type读取Blob保存文件；非2xx按JSON错误解析，不能将错误响应当作xlsx。401停止，409等待进度，429退避；跨域服务允许Authorization和Idempotency-Key请求头，并暴露Content-Disposition响应头。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            }
+          ]
+        },
+        {
+          "接口名称": "上传题单并创建批量答题任务",
+          "对应功能模块": "上传Excel、自动识别问题、智能作答",
+          "请求方式": "POST",
+          "路径": "/api/v1/batch-answer-jobs",
+          "内容类型": "multipart/form-data",
+          "请求参数": {
+            "file": {
+              "type": "binary",
+              "required": true,
+              "description": "上传文件。通过multipart/form-data的文件字段传输真实字节，不是本地路径字符串。 XLS/XLSX/CSV，最大10MiB，首工作表包含问题列",
+              "原始说明": "XLS/XLSX/CSV，最大10MiB，首工作表包含问题列",
+              "字段说明": "上传文件",
+              "字段注释": "通过multipart/form-data的文件字段传输真实字节，不是本地路径字符串。 XLS/XLSX/CSV，最大10MiB，首工作表包含问题列"
+            }
+          },
+          "返回参数": {
+            "job": {
+              "ref": "BatchJob",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "批量答题任务详情",
+              "字段注释": "整份题单共用一个任务编号，前端不需要逐道题查询进度。",
+              "description": "批量答题任务详情。整份题单共用一个任务编号，前端不需要逐道题查询进度。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "批量任务已创建",
+            "request_id": "req_batch_create",
+            "data": {
+              "job": {
+                "id": "b1",
+                "file_name": "后端面试题.xlsx",
+                "resume_id": "r1",
+                "resume_version_id": "rv1",
+                "status": "queued",
+                "total": 2,
+                "succeeded": 0,
+                "failed": 0,
+                "download_ready": false,
+                "error_code": null
+              }
+            }
+          },
+          "成功HTTP状态": 202,
+          "批注": {
+            "设计思路": "用户上传一整份题单，只应创建一个批量任务。浏览器不需要给每道题单独发生成请求；后台控制同时处理的数量，既能提升速度，也能避免大量请求把AI服务压垮。",
+            "实现逻辑": "1. 检查当前简历可用，再校验文件格式、大小及第一工作表是否包含“问题”列。\n2. 按原始行号提取有效题目，忽略空题，检查总数不超过200；保存原始行以便导出时保留其他列。\n3. 一次保存整份任务和所有行记录，固定简历版本，然后由后台有限并发地生成答案。\n4. 每行单独记录成功或失败，全部处理完后生成结果Excel；部分失败也保留成功答案和失败原因。",
+            "数据表": [
+              "users",
+              "resumes",
+              "resume_versions",
+              "files",
+              "batch_jobs",
+              "batch_job_items",
+              "ai_answers",
+              "outbox_events",
+              "idempotency_records"
+            ],
+            "关联关系": "batch_jobs.source_file_id→files.id；batch_jobs 1:N batch_job_items；batch_job_items.answer_id→ai_answers.id；所有答案绑定任务固定的简历版本",
+            "表关系举例": "例如用户u1上传题单形成任务b1，batch_jobs保存b1的上传文件和简历版本rv1；batch_job_items保存b1中每道题，answer_id对应ai_answers中的答案；结果生成后，b1的result_file_id指向files中的Excel文件。"
+          },
+          "请求示例": {
+            "file": "后端面试题.xlsx（实际传文件字节）"
+          },
+          "接入流程": [
+            "GET /api/v1/pages/batch-answers一次获取规则、当前简历与latest_job；先检查简历就绪，再POST原始文件创建任务，整个题单只创建一个任务。",
+            "页面需绑定文件选择及拖放事件，补齐处理中、成功、部分失败、失败和下载入口；POST返回后保存job.id，每2秒查询一次并逐步退避至10秒。",
+            "queued/running持续查询；最多自动等待10分钟，之后保留任务并提示手动刷新；隐藏页面暂停，重新进入用latest_job恢复。只查询任务，不逐题请求。",
+            "succeeded/partial_failed且download_ready=true才启用下载；全部失败时status=failed且download_ready=false。按任务实际resume_id和resume_version_id显示依据，不把当前生效简历当作旧任务依据。",
+            "统计遵循succeeded+failed<=total；全部终态时等于total。结果文件未准备好仍为running；文件生成失败则failed并记录错误。部分题目失败仍生成含错误原因的XLSX。",
+            "下载成功按Content-Type读取Blob保存文件；非2xx按JSON错误解析，不能将错误响应当作xlsx。401停止，409等待进度，429退避；跨域服务允许Authorization和Idempotency-Key请求头，并暴露Content-Disposition响应头。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "IDEMPOTENCY_CONFLICT",
+              "message": "同一个幂等键不能提交不同内容",
+              "request_id": "req_idempotency_conflict",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "IDEMPOTENCY_IN_PROGRESS",
+              "message": "原请求仍在处理中，请使用同一幂等键稍后重试",
+              "request_id": "req_idempotency_in_progress",
+              "data": null
+            },
+            {
+              "http_status": 413,
+              "code": "FILE_TOO_LARGE",
+              "message": "上传文件超过允许大小",
+              "request_id": "req_file_too_large",
+              "data": null
+            },
+            {
+              "http_status": 415,
+              "code": "UNSUPPORTED_FILE_TYPE",
+              "message": "不支持该文件类型，请按页面提示选择文件",
+              "request_id": "req_unsupported_file_type",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "NO_ACTIVE_RESUME",
+              "message": "请先上传并选择生效简历",
+              "request_id": "req_no_active_resume",
+              "data": null
+            },
+            {
+              "http_status": 422,
+              "code": "RESUME_NOT_READY",
+              "message": "当前简历尚未解析成功，请等待解析或更换简历",
+              "request_id": "req_resume_not_ready",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_FILE_CONTENT",
+              "message": "未找到有效的问题列，或题目数量超过限制",
+              "request_id": "req_invalid_file_content",
+              "data": null
+            }
+          ]
+        },
+        {
+          "接口名称": "获取批量任务进度与结果摘要",
+          "对应功能模块": "智能作答步骤、完成状态、下载入口",
+          "请求方式": "GET",
+          "路径": "/api/v1/batch-answer-jobs/{job_id}",
+          "请求参数": {
+            "job_id": {
+              "type": "string",
+              "required": true,
+              "位置": "path",
+              "原始说明": "",
+              "字段说明": "批量任务编号",
+              "字段注释": "必填、非空的资源编号；按路径替换，不放入请求体，不接受null。",
+              "description": "批量任务编号。必填、非空的资源编号；按路径替换，不放入请求体，不接受null。",
+              "example": "b1",
+              "minLength": 1
+            }
+          },
+          "返回参数": {
+            "job": {
+              "ref": "BatchJob",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "批量答题任务详情",
+              "字段注释": "整份题单共用一个任务编号，前端不需要逐道题查询进度。",
+              "description": "批量答题任务详情。整份题单共用一个任务编号，前端不需要逐道题查询进度。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "成功",
+            "request_id": "req_batch_status",
+            "data": {
+              "job": {
+                "id": "b1",
+                "file_name": "后端面试题.xlsx",
+                "resume_id": "r1",
+                "resume_version_id": "rv1",
+                "status": "partial_failed",
+                "total": 2,
+                "succeeded": 1,
+                "failed": 1,
+                "download_ready": true,
+                "error_code": null
+              }
+            }
+          },
+          "批注": {
+            "设计思路": "用户等待整份题单完成时，只需要总体进度和下载是否就绪，不需要逐题查询。一次返回总数、成功数和失败数，页面即可显示进度。",
+            "实现逻辑": "1. 确认任务属于当前用户。\n2. 读取任务状态、总题数、成功数和失败数，不在查询时重新运行AI。\n3. 题目全部处理后还要等待结果文件生成；只有文件可用才返回download_ready=true。\n4. 例如2题中1题成功、1题失败，文件生成后状态为partial_failed，用户仍可下载查看失败原因。",
+            "数据表": [
+              "batch_jobs",
+              "files"
+            ],
+            "关联关系": "batch_jobs.user_id→users.id；batch_jobs.result_file_id→files.id（未生成时为空）",
+            "表关系举例": "例如用户u1上传题单形成任务b1，batch_jobs保存b1的上传文件和简历版本rv1；batch_job_items保存b1中每道题，answer_id对应ai_answers中的答案；结果生成后，b1的result_file_id指向files中的Excel文件。"
+          },
+          "请求示例": {
+            "job_id": "b1"
+          },
+          "接入流程": [
+            "GET /api/v1/pages/batch-answers一次获取规则、当前简历与latest_job；先检查简历就绪，再POST原始文件创建任务，整个题单只创建一个任务。",
+            "页面需绑定文件选择及拖放事件，补齐处理中、成功、部分失败、失败和下载入口；POST返回后保存job.id，每2秒查询一次并逐步退避至10秒。",
+            "queued/running持续查询；最多自动等待10分钟，之后保留任务并提示手动刷新；隐藏页面暂停，重新进入用latest_job恢复。只查询任务，不逐题请求。",
+            "succeeded/partial_failed且download_ready=true才启用下载；全部失败时status=failed且download_ready=false。按任务实际resume_id和resume_version_id显示依据，不把当前生效简历当作旧任务依据。",
+            "统计遵循succeeded+failed<=total；全部终态时等于total。结果文件未准备好仍为running；文件生成失败则failed并记录错误。部分题目失败仍生成含错误原因的XLSX。",
+            "下载成功按Content-Type读取Blob保存文件；非2xx按JSON错误解析，不能将错误响应当作xlsx。401停止，409等待进度，429退避；跨域服务允许Authorization和Idempotency-Key请求头，并暴露Content-Disposition响应头。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            },
+            {
+              "http_status": 404,
+              "code": "RESOURCE_NOT_FOUND",
+              "message": "记录不存在或当前用户不可见",
+              "request_id": "req_resource_not_found",
+              "data": null
+            }
+          ]
+        },
+        {
+          "接口名称": "下载批量答题结果",
+          "对应功能模块": "下载含答案文件",
+          "请求方式": "GET",
+          "路径": "/api/v1/batch-answer-jobs/{job_id}/result",
+          "请求参数": {
+            "job_id": {
+              "type": "string",
+              "required": true,
+              "位置": "path",
+              "原始说明": "",
+              "字段说明": "批量任务编号",
+              "字段注释": "必填、非空的资源编号；按路径替换，不放入请求体，不接受null。",
+              "description": "批量任务编号。必填、非空的资源编号；按路径替换，不放入请求体，不接受null。",
+              "example": "b1",
+              "minLength": 1
+            }
+          },
+          "返回参数": {
+            "body": {
+              "type": "binary",
+              "required": true,
+              "description": "下载文件内容。实际响应为二进制流，示例中的文字仅说明文件内容，不是JSON响应。 XLSX；Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet；Content-Disposition: attachment，含UTF-8文件名",
+              "原始说明": "XLSX；Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet；Content-Disposition: attachment，含UTF-8文件名",
+              "字段说明": "下载文件内容",
+              "字段注释": "实际响应为二进制流，示例中的文字仅说明文件内容，不是JSON响应。 XLSX；Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet；Content-Disposition: attachment，含UTF-8文件名"
+            }
+          },
+          "返回示例": {
+            "http_status": 200,
+            "headers": {
+              "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "Content-Disposition": "attachment; filename=answers.xlsx"
+            },
+            "body说明": "实际响应为XLSX字节，不套JSON封装"
+          },
+          "批注": {
+            "设计思路": "用户点击下载后才传输结果文件，查询进度时不反复带上整份Excel，节省网络流量。下载文件保留原题单内容，并追加答案、状态及错误原因列。",
+            "实现逻辑": "1. 按任务编号检查归属，不能下载其他用户的文件。\n2. 确认download_ready=true，尚未就绪时返回409提示稍后再试。\n3. 根据任务的result_file_id查到私有存储中的结果文件，读取并返回字节流。\n4. 浏览器携带认证信息下载为Blob，再保存成xlsx；失败题目的答案单元格留空，错误原因列写明原因。",
+            "数据表": [
+              "batch_jobs",
+              "files"
+            ],
+            "关联关系": "batch_jobs.result_file_id→files.id，禁止通过任意file_id绕过任务归属检查",
+            "表关系举例": "例如用户u1上传题单形成任务b1，batch_jobs保存b1的上传文件和简历版本rv1；batch_job_items保存b1中每道题，answer_id对应ai_answers中的答案；结果生成后，b1的result_file_id指向files中的Excel文件。"
+          },
+          "请求示例": {
+            "job_id": "b1"
+          },
+          "接入流程": [
+            "GET /api/v1/pages/batch-answers一次获取规则、当前简历与latest_job；先检查简历就绪，再POST原始文件创建任务，整个题单只创建一个任务。",
+            "页面需绑定文件选择及拖放事件，补齐处理中、成功、部分失败、失败和下载入口；POST返回后保存job.id，每2秒查询一次并逐步退避至10秒。",
+            "queued/running持续查询；最多自动等待10分钟，之后保留任务并提示手动刷新；隐藏页面暂停，重新进入用latest_job恢复。只查询任务，不逐题请求。",
+            "succeeded/partial_failed且download_ready=true才启用下载；全部失败时status=failed且download_ready=false。按任务实际resume_id和resume_version_id显示依据，不把当前生效简历当作旧任务依据。",
+            "统计遵循succeeded+failed<=total；全部终态时等于total。结果文件未准备好仍为running；文件生成失败则failed并记录错误。部分题目失败仍生成含错误原因的XLSX。",
+            "下载成功按Content-Type读取Blob保存文件；非2xx按JSON错误解析，不能将错误响应当作xlsx。401停止，409等待进度，429退避；跨域服务允许Authorization和Idempotency-Key请求头，并暴露Content-Disposition响应头。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            },
+            {
+              "http_status": 404,
+              "code": "RESOURCE_NOT_FOUND",
+              "message": "记录不存在或当前用户不可见",
+              "request_id": "req_resource_not_found",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "RESULT_NOT_READY",
+              "message": "结果文件尚未生成，请稍后下载",
+              "request_id": "req_result_not_ready",
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "模块": "公开题库",
+      "接口": [
+        {
+          "接口名称": "获取公开题库与筛选项",
+          "对应功能模块": "技术/人资分类、搜索公司或问题、题目卡片",
+          "请求方式": "GET",
+          "路径": "/api/v1/pages/question-bank",
+          "请求参数": {
+            "category": {
+              "type": "string",
+              "required": false,
+              "enum": [
+                "technical",
+                "hr"
+              ],
+              "description": "题库筛选类别。只接受technical（技术问题）或hr（人资问题）；选择全部时不传，不得传all或unclassified。",
+              "原始说明": "不传代表全部",
+              "字段说明": "题库筛选类别",
+              "字段注释": "只接受technical（技术问题）或hr（人资问题）；选择全部时不传，不得传all或unclassified。",
+              "example": "technical"
+            },
+            "keyword": {
+              "type": "string",
+              "required": false,
+              "description": "公司或题目搜索词。例如Redis或字节；最多100字，前端输入后延迟约300毫秒再查询。 公司名或题目文本，最多100字",
+              "原始说明": "公司名或题目文本，最多100字",
+              "字段说明": "公司或题目搜索词",
+              "字段注释": "例如Redis或字节；最多100字，前端输入后延迟约300毫秒再查询。 公司名或题目文本，最多100字",
+              "example": "缓存",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "cursor": {
+              "type": "string",
+              "required": false,
+              "原始说明": "",
+              "字段说明": "下一页查询游标",
+              "字段注释": "首次不传；翻页原样传上次返回的next_cursor；改变筛选条件后清空。",
+              "description": "下一页查询游标。首次不传；翻页原样传上次返回的next_cursor；改变筛选条件后清空。",
+              "example": "eyJpZCI6InExMCJ9",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "limit": {
+              "type": "integer",
+              "required": false,
+              "minimum": 1,
+              "maximum": 100,
+              "原始说明": "",
+              "字段说明": "每页条数",
+              "字段注释": "默认20，范围1～100；不控制首页固定3条摘要。",
+              "description": "每页条数。默认20，范围1～100；不控制首页固定3条摘要。",
+              "example": 20,
+              "default": 20
+            }
+          },
+          "返回参数": {
+            "categories": {
+              "type": "array",
+              "required": true,
+              "items": "string",
+              "原始说明": "",
+              "字段说明": "页面分类选项",
+              "字段注释": "all=全部，technical=技术问题，hr=人资问题；全部查询时不传category。",
+              "description": "页面分类选项。all=全部，technical=技术问题，hr=人资问题；全部查询时不传category。"
+            },
+            "items": {
+              "type": "array",
+              "required": true,
+              "items": {
+                "ref": "Question"
+              },
+              "原始说明": "",
+              "字段说明": "当前页列表",
+              "字段注释": "元素结构见对应数据模型；有数据时返回对象数组，无数据时返回[]。",
+              "description": "当前页列表。元素结构见对应数据模型；有数据时返回对象数组，无数据时返回[]。"
+            },
+            "next_cursor": {
+              "type": "string",
+              "required": true,
+              "nullable": true,
+              "原始说明": "",
+              "字段说明": "下一页游标",
+              "字段注释": "为null表示已到最后一页，前端应停止加载更多。",
+              "description": "下一页游标。为null表示已到最后一页，前端应停止加载更多。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "成功",
+            "request_id": "req_bank",
+            "data": {
+              "categories": [
+                "all",
+                "technical",
+                "hr"
+              ],
+              "items": [
+                {
+                  "id": "q1",
+                  "interview_id": "i1",
+                  "text": "如何保证缓存一致性？",
+                  "category": "technical",
+                  "level": "advanced",
+                  "classification_status": "succeeded",
+                  "company": "字节跳动",
+                  "city": "北京",
+                  "salary": "25–40K",
+                  "author_name": "林同学",
+                  "views": 328,
+                  "created_at": "2026-10-22T02:00:00Z"
+                }
+              ],
+              "next_cursor": null
+            }
+          },
+          "批注": {
+            "设计思路": "用户进入题库、切换分类或输入搜索词时调用。每张卡片需要题干、公司、城市、薪资、作者和浏览量，所以列表直接返回完整卡片，前端不用一张卡片再查一次公司或作者。",
+            "实现逻辑": "1. 只选择允许公开分享的面经及其题目。\n2. 按技术/人资类别和公司或题目关键词筛选；全部分类不传category。\n3. 批量查询本页题目的面经和作者信息，按稳定顺序返回列表及下一页游标。\n4. 筛选改变时前端清空旧游标；没有结果显示空列表；私人简历和个性化答案不随题库返回。",
+            "数据表": [
+              "questions",
+              "interviews",
+              "users"
+            ],
+            "关联关系": "questions.interview_id→interviews.id；interviews.user_id→users.id；公开可见性以interviews.is_public为唯一来源",
+            "表关系举例": "例如用户u1记录面经i1，再保存题目q1和q2：interviews.user_id=u1，questions.interview_id=i1。一场面试有多道题，每道题只属于一场面试；公开属性由面经统一决定。"
+          },
+          "请求示例": {
+            "category": "technical",
+            "keyword": "缓存",
+            "limit": 20
+          },
+          "接入流程": [
+            "GET /api/v1/pages/question-bank返回分类和卡片；选择全部时省略category。输入关键词延迟300毫秒查询，旧查询结果不得覆盖新查询。",
+            "增加“加载更多”；改变分类或关键词时清空cursor并替换列表；下一页按ID追加去重。不要把中文分类或all传给只接受technical/hr的查询参数。",
+            "打开回答弹窗复用AI流程；不读取或公开发布者的简历及私人答案。公司首字、颜色和枚举中文在前端转换。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            }
+          ]
+        },
+        {
+          "接口名称": "记录公开题目浏览",
+          "对应功能模块": "题目浏览量、面经帮助人数",
+          "请求方式": "POST",
+          "路径": "/api/v1/questions/{question_id}/views",
+          "请求参数": {
+            "question_id": {
+              "type": "string",
+              "required": true,
+              "位置": "path",
+              "原始说明": "",
+              "字段说明": "来源题目编号",
+              "字段注释": "必填、非空的资源编号；按路径替换，不放入请求体，不接受null。",
+              "description": "来源题目编号。必填、非空的资源编号；按路径替换，不放入请求体，不接受null。",
+              "example": "q1",
+              "minLength": 1
+            }
+          },
+          "返回参数": {
+            "counted": {
+              "type": "boolean",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "本次浏览是否计入次数",
+              "字段注释": "true为首次有效浏览；同人同日重复打开或作者自览为false。",
+              "description": "本次浏览是否计入次数。true为首次有效浏览；同人同日重复打开或作者自览为false。"
+            },
+            "views": {
+              "type": "integer",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "累计有效浏览次数",
+              "字段注释": "按每人每天同一道题最多一次计数，排除作者本人；不同于帮助人数。",
+              "description": "累计有效浏览次数。按每人每天同一道题最多一次计数，排除作者本人；不同于帮助人数。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "成功",
+            "request_id": "req_view",
+            "data": {
+              "counted": true,
+              "views": 329
+            }
+          },
+          "批注": {
+            "设计思路": "用户实际打开某道公开题目的回答入口时，才认为浏览过该题，而不是滚动列表看到卡片就加次数。同一个人同一天反复打开只算一次，防止浏览量被重复刷新放大。 浏览事件是唯一计数入口；创建AI回答不再增加浏览次数。",
+            "实现逻辑": "1. 检查题目确实公开，并找到所属面经及作者。\n2. 作者自己打开不计数；其他用户按题目、用户、UTC日期判断当天是否已经浏览。\n3. 第一次浏览写入记录并增加题目views，重复浏览只返回当前次数。\n4. “帮助人数”另按浏览用户去重，例如一人看了作者的3道题仍只算帮助1人。",
+            "数据表": [
+              "questions",
+              "interviews",
+              "question_views"
+            ],
+            "关联关系": "question_views.question_id→questions.id；question_views.viewer_user_id→users.id；经questions.interview_id追溯作者",
+            "表关系举例": "例如面经i1属于用户u1，题目q1属于i1；用户u2打开q1时，在question_views记录q1与u2的关系。通过题目再找到面经，就知道这次浏览帮助的是哪位作者。"
+          },
+          "请求示例": {
+            "question_id": "q1"
+          },
+          "接入流程": [
+            "GET /api/v1/pages/question-bank返回分类和卡片；选择全部时省略category。输入关键词延迟300毫秒查询，旧查询结果不得覆盖新查询。",
+            "增加“加载更多”；改变分类或关键词时清空cursor并替换列表；下一页按ID追加去重。不要把中文分类或all传给只接受technical/hr的查询参数。",
+            "打开回答弹窗复用AI流程；不读取或公开发布者的简历及私人答案。公司首字、颜色和枚举中文在前端转换。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            },
+            {
+              "http_status": 404,
+              "code": "RESOURCE_NOT_FOUND",
+              "message": "记录不存在或当前用户不可见",
+              "request_id": "req_resource_not_found",
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "模块": "我的面经",
+      "接口": [
+        {
+          "接口名称": "获取面经列表页与统计",
+          "对应功能模块": "统计卡片、面试记录列表",
+          "请求方式": "GET",
+          "路径": "/api/v1/pages/interviews",
+          "请求参数": {
+            "cursor": {
+              "type": "string",
+              "required": false,
+              "原始说明": "",
+              "字段说明": "下一页查询游标",
+              "字段注释": "首次不传；翻页原样传上次返回的next_cursor；改变筛选条件后清空。",
+              "description": "下一页查询游标。首次不传；翻页原样传上次返回的next_cursor；改变筛选条件后清空。",
+              "example": "eyJpZCI6InExMCJ9",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "limit": {
+              "type": "integer",
+              "required": false,
+              "minimum": 1,
+              "maximum": 100,
+              "原始说明": "",
+              "字段说明": "每页条数",
+              "字段注释": "默认20，范围1～100；不控制首页固定3条摘要。",
+              "description": "每页条数。默认20，范围1～100；不控制首页固定3条摘要。",
+              "example": 20,
+              "default": 20
+            }
+          },
+          "返回参数": {
+            "stats": {
+              "type": "object",
+              "required": true,
+              "properties": {
+                "interview_count": {
+                  "type": "integer",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "已记录面试场数",
+                  "字段注释": "当前用户保存的面试记录总数。",
+                  "description": "已记录面试场数。当前用户保存的面试记录总数。"
+                },
+                "new_this_month": {
+                  "type": "integer",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "本月新增面试场数",
+                  "字段注释": "按创建时间及用户时区计算本月新增记录，不按面试日期倒推。",
+                  "description": "本月新增面试场数。按创建时间及用户时区计算本月新增记录，不按面试日期倒推。"
+                },
+                "question_count": {
+                  "type": "integer",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "题目总数",
+                  "字段注释": "本场面试实际保存的题目数量，包含尚未自动分类的题目。",
+                  "description": "题目总数。本场面试实际保存的题目数量，包含尚未自动分类的题目。"
+                },
+                "technical_ratio": {
+                  "type": "number",
+                  "required": true,
+                  "description": "技术问题占比。技术题数除以全部题数，返回0～1的小数；前端乘100展示百分比。 技术题数/全部题数，范围0～1，空题为0",
+                  "原始说明": "技术题数/全部题数，范围0～1，空题为0",
+                  "字段说明": "技术问题占比",
+                  "字段注释": "技术题数除以全部题数，返回0～1的小数；前端乘100展示百分比。 技术题数/全部题数，范围0～1，空题为0"
+                },
+                "public_question_count": {
+                  "type": "integer",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "公开分享题目数",
+                  "字段注释": "统计is_public=true面经下的题目数量，不是公开面试场数。",
+                  "description": "公开分享题目数。统计is_public=true面经下的题目数量，不是公开面试场数。"
+                },
+                "helped_user_count": {
+                  "type": "integer",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "帮助过的用户人数",
+                  "字段注释": "所有公开题目的浏览者按用户去重，排除自己；同一个人浏览多题只算1人。",
+                  "description": "帮助过的用户人数。所有公开题目的浏览者按用户去重，排除自己；同一个人浏览多题只算1人。"
+                }
+              },
+              "原始说明": "",
+              "字段说明": "用户面经汇总统计",
+              "字段注释": "汇总当前用户所有记录，不只统计当前分页的数据。",
+              "description": "用户面经汇总统计。汇总当前用户所有记录，不只统计当前分页的数据。"
+            },
+            "items": {
+              "type": "array",
+              "required": true,
+              "items": {
+                "ref": "Interview"
+              },
+              "原始说明": "",
+              "字段说明": "当前页列表",
+              "字段注释": "元素结构见对应数据模型；有数据时返回对象数组，无数据时返回[]。",
+              "description": "当前页列表。元素结构见对应数据模型；有数据时返回对象数组，无数据时返回[]。"
+            },
+            "next_cursor": {
+              "type": "string",
+              "required": true,
+              "nullable": true,
+              "原始说明": "",
+              "字段说明": "下一页游标",
+              "字段注释": "为null表示已到最后一页，前端应停止加载更多。",
+              "description": "下一页游标。为null表示已到最后一页，前端应停止加载更多。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "成功",
+            "request_id": "req_interviews",
+            "data": {
+              "stats": {
+                "interview_count": 1,
+                "new_this_month": 1,
+                "question_count": 2,
+                "technical_ratio": 0.5,
+                "public_question_count": 2,
+                "helped_user_count": 126
+              },
+              "items": [
+                {
+                  "id": "i1",
+                  "company": "字节跳动",
+                  "role": "后端开发工程师",
+                  "interview_date": "2026-10-22",
+                  "city": "北京",
+                  "salary": "25–40K",
+                  "status": "recorded",
+                  "is_public": true,
+                  "question_count": 2
+                }
+              ],
+              "next_cursor": null
+            }
+          },
+          "批注": {
+            "设计思路": "“我的面经”页上方统计卡片和下方记录列表属于同一页面，因此一次返回。统计覆盖用户的全部记录，不因列表翻到第二页就改变总数。",
+            "实现逻辑": "1. 只读取当前用户的面经，统计记录总场数和本月新建场数。\n2. 统计所有关联题目总数、技术题比例和公开题目数。\n3. 从公开题目的有效浏览记录中去重用户，得到帮助人数。\n4. 再查询本页面经卡片及题数，把统计和列表一起返回；大数据量时可缓存统计，但必须明确更新时机。",
+            "数据表": [
+              "users",
+              "user_settings",
+              "interviews",
+              "questions",
+              "question_views"
+            ],
+            "关联关系": "users 1:N interviews；interviews 1:N questions；questions 1:N question_views",
+            "表关系举例": "例如面经i1属于用户u1，题目q1属于i1；用户u2打开q1时，在question_views记录q1与u2的关系。通过题目再找到面经，就知道这次浏览帮助的是哪位作者。"
+          },
+          "请求示例": {
+            "limit": 20
+          },
+          "接入流程": [
+            "GET /api/v1/pages/interviews同时绑定统计和卡片，统计覆盖全部记录；列表增加加载更多，不能用本页条数计算总场数。",
+            "点击卡片GET /api/v1/interviews/{interview_id}获取真实详情；绑定interview、summary、questions，禁止使用公开题库切片补题。",
+            "记录面试弹窗只提交现有输入：company、city、salary、category_mode、is_public、questions；role与interview_date可不传，由后端填默认职位与用户当地日期。手填按行拆题，Excel浏览器解析后提交同一种字符串数组。",
+            "所有题目一次提交；网络失败保留表单并复用幂等键重试，只有保存成功才关闭及重置。全局弹窗保存后使首页、题库、面经列表和详情缓存失效，切回相关页面重新GET。",
+            "保存或追加返回pending时按当前interview_id有限轮询已有详情，2秒起、最长5秒，最长2分钟；逐题classification_status没有pending后停止。failed的题目保留原文及待分类标签，允许后续手动刷新。",
+            "补充问题入口先增加输入与提交界面，再POST追加数组；成功刷新详情和相关统计。后台分类结束后失效首页、题库及统计缓存；本地其他页面标记过期，下一次进入时重取。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            }
+          ]
+        },
+        {
+          "接口名称": "获取单场面经详情",
+          "对应功能模块": "公司信息、状态、题目分类统计、全部面试题",
+          "请求方式": "GET",
+          "路径": "/api/v1/interviews/{interview_id}",
+          "请求参数": {
+            "interview_id": {
+              "type": "string",
+              "required": true,
+              "位置": "path",
+              "原始说明": "",
+              "字段说明": "所属面试记录编号",
+              "字段注释": "必填、非空的资源编号；按路径替换，不放入请求体，不接受null。",
+              "description": "所属面试记录编号。必填、非空的资源编号；按路径替换，不放入请求体，不接受null。",
+              "example": "i1",
+              "minLength": 1
+            }
+          },
+          "返回参数": {
+            "interview": {
+              "ref": "Interview",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "单场面试信息",
+              "字段注释": "公司、岗位、日期、公开状态及题数的完整摘要。",
+              "description": "单场面试信息。公司、岗位、日期、公开状态及题数的完整摘要。"
+            },
+            "summary": {
+              "type": "object",
+              "required": true,
+              "properties": {
+                "total": {
+                  "type": "integer",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "全部项目数量",
+                  "字段注释": "详情统计表示题目总数；批量任务表示有效题目总数。",
+                  "description": "全部项目数量。详情统计表示题目总数；批量任务表示有效题目总数。"
+                },
+                "technical": {
+                  "type": "integer",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "技术题数量",
+                  "字段注释": "category=technical的题目数量。",
+                  "description": "技术题数量。category=technical的题目数量。"
+                },
+                "hr": {
+                  "type": "integer",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "人资题数量",
+                  "字段注释": "category=hr的题目数量。",
+                  "description": "人资题数量。category=hr的题目数量。"
+                },
+                "unclassified": {
+                  "type": "integer",
+                  "required": true,
+                  "原始说明": "",
+                  "字段说明": "待分类题目数量",
+                  "字段注释": "尚未识别或识别失败仍未分类的题目数，不应误计入技术题。",
+                  "description": "待分类题目数量。尚未识别或识别失败仍未分类的题目数，不应误计入技术题。"
+                }
+              },
+              "原始说明": "",
+              "字段说明": "本场题目分类统计",
+              "字段注释": "总数必须等于技术题、人资题和待分类题数量之和。",
+              "description": "本场题目分类统计。总数必须等于技术题、人资题和待分类题数量之和。"
+            },
+            "questions": {
+              "type": "array",
+              "required": true,
+              "items": {
+                "ref": "Question"
+              },
+              "原始说明": "",
+              "字段说明": "本场问题集合",
+              "字段注释": "保存与追加接口传题干字符串数组；详情接口返回Question对象数组，按记录顺序排列。",
+              "description": "本场问题集合。保存与追加接口传题干字符串数组；详情接口返回Question对象数组，按记录顺序排列。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "成功",
+            "request_id": "req_detail",
+            "data": {
+              "interview": {
+                "id": "i1",
+                "company": "字节跳动",
+                "role": "后端开发工程师",
+                "interview_date": "2026-10-22",
+                "city": "北京",
+                "salary": "25–40K",
+                "status": "recorded",
+                "is_public": true,
+                "question_count": 2
+              },
+              "summary": {
+                "total": 2,
+                "technical": 1,
+                "hr": 1,
+                "unclassified": 0
+              },
+              "questions": [
+                {
+                  "id": "q1",
+                  "interview_id": "i1",
+                  "text": "如何保证缓存一致性？",
+                  "category": "technical",
+                  "level": "advanced",
+                  "classification_status": "succeeded",
+                  "company": "字节跳动",
+                  "city": "北京",
+                  "salary": "25–40K",
+                  "author_name": "林同学",
+                  "views": 328,
+                  "created_at": "2026-10-22T02:00:00Z"
+                },
+                {
+                  "id": "q2",
+                  "interview_id": "i1",
+                  "text": "请介绍一次项目中遇到的挑战及解决过程。",
+                  "category": "hr",
+                  "level": "common",
+                  "classification_status": "succeeded",
+                  "company": "字节跳动",
+                  "city": "北京",
+                  "salary": "25–40K",
+                  "author_name": "林同学",
+                  "views": 185,
+                  "created_at": "2026-10-22T02:00:00Z"
+                }
+              ]
+            }
+          },
+          "批注": {
+            "设计思路": "用户点击某场面试后，一屏要展示公司岗位、题目总数、分类数量和全部题干。一次返回这些内容，避免先显示详情头部再等待多个统计请求。",
+            "实现逻辑": "1. 先按面经编号查询记录，并验证它属于当前用户。\n2. 只读取这场面试关联的题目，按记录顺序排列，不能借用公开题库的其他题。\n3. 数出技术、人资和待分类题的数量，保证三者之和等于题目总数。\n4. 把面经信息、统计和题目一起返回；后台分类尚未完成时明确标为待分类。",
+            "数据表": [
+              "interviews",
+              "questions",
+              "users"
+            ],
+            "关联关系": "questions.interview_id→interviews.id；interviews.user_id限定归属；详情统计必须满足total=technical+hr+unclassified",
+            "表关系举例": "例如用户u1记录面经i1，再保存题目q1和q2：interviews.user_id=u1，questions.interview_id=i1。一场面试有多道题，每道题只属于一场面试；公开属性由面经统一决定。"
+          },
+          "请求示例": {
+            "interview_id": "i1"
+          },
+          "接入流程": [
+            "GET /api/v1/pages/interviews同时绑定统计和卡片，统计覆盖全部记录；列表增加加载更多，不能用本页条数计算总场数。",
+            "点击卡片GET /api/v1/interviews/{interview_id}获取真实详情；绑定interview、summary、questions，禁止使用公开题库切片补题。",
+            "记录面试弹窗只提交现有输入：company、city、salary、category_mode、is_public、questions；role与interview_date可不传，由后端填默认职位与用户当地日期。手填按行拆题，Excel浏览器解析后提交同一种字符串数组。",
+            "所有题目一次提交；网络失败保留表单并复用幂等键重试，只有保存成功才关闭及重置。全局弹窗保存后使首页、题库、面经列表和详情缓存失效，切回相关页面重新GET。",
+            "保存或追加返回pending时按当前interview_id有限轮询已有详情，2秒起、最长5秒，最长2分钟；逐题classification_status没有pending后停止。failed的题目保留原文及待分类标签，允许后续手动刷新。",
+            "补充问题入口先增加输入与提交界面，再POST追加数组；成功刷新详情和相关统计。后台分类结束后失效首页、题库及统计缓存；本地其他页面标记过期，下一次进入时重取。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            },
+            {
+              "http_status": 404,
+              "code": "RESOURCE_NOT_FOUND",
+              "message": "记录不存在或当前用户不可见",
+              "request_id": "req_resource_not_found",
+              "data": null
+            }
+          ]
+        },
+        {
+          "接口名称": "保存面试记录及全部问题",
+          "对应功能模块": "全局记录面试弹窗、手动输入、Excel导入、公开分享",
+          "请求方式": "POST",
+          "路径": "/api/v1/interviews",
+          "请求参数": {
+            "company": {
+              "type": "string",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "面试公司名称",
+              "字段注释": "用户填写的公司展示名，例如字节跳动；当前不依赖公司字典表。",
+              "description": "面试公司名称。用户填写的公司展示名，例如字节跳动；当前不依赖公司字典表。",
+              "example": "字节跳动",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "city": {
+              "type": "string",
+              "required": false,
+              "原始说明": "",
+              "字段说明": "面试所在城市",
+              "字段注释": "例如北京；未填写时返回null，前端显示“未填写”。",
+              "description": "面试所在城市。例如北京；未填写时返回null，前端显示“未填写”。",
+              "example": "北京",
+              "minLength": 1,
+              "maxLength": 50
+            },
+            "salary": {
+              "type": "string",
+              "required": false,
+              "原始说明": "",
+              "字段说明": "薪资范围",
+              "字段注释": "保留用户输入文本，例如25–40K；未填写时返回null，不参与数值计算。",
+              "description": "薪资范围。保留用户输入文本，例如25–40K；未填写时返回null，不参与数值计算。",
+              "example": "25–40K",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "role": {
+              "type": "string",
+              "required": false,
+              "description": "面试岗位名称。例如后端开发工程师；当前弹窗没有输入框时默认“待补充职位”。 当前弹窗无该输入，缺省待补充职位",
+              "原始说明": "当前弹窗无该输入，缺省待补充职位",
+              "字段说明": "面试岗位名称",
+              "字段注释": "例如后端开发工程师；当前弹窗没有输入框时默认“待补充职位”。 当前弹窗无该输入，缺省待补充职位",
+              "example": "后端开发工程师",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "interview_date": {
+              "type": "string",
+              "required": false,
+              "description": "实际面试日期。格式YYYY-MM-DD；未提交时取用户时区当天，不使用UTC日期直接替代。 缺省用户时区当天",
+              "原始说明": "缺省用户时区当天",
+              "字段说明": "实际面试日期",
+              "字段注释": "格式YYYY-MM-DD；未提交时取用户时区当天，不使用UTC日期直接替代。 缺省用户时区当天",
+              "example": "2026-10-22",
+              "format": "date"
+            },
+            "category_mode": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "auto",
+                "technical",
+                "hr"
+              ],
+              "原始说明": "",
+              "字段说明": "题目分类方式",
+              "字段注释": "auto=后台自动识别每道题；technical或hr表示本次提交的题目统一按指定类别保存。",
+              "description": "题目分类方式。auto=后台自动识别每道题；technical或hr表示本次提交的题目统一按指定类别保存。",
+              "example": "auto"
+            },
+            "is_public": {
+              "type": "boolean",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "是否公开分享题目",
+              "字段注释": "true允许其他用户在公开题库看到本场题目；不会公开简历或个性化答案。",
+              "description": "是否公开分享题目。true允许其他用户在公开题库看到本场题目；不会公开简历或个性化答案。",
+              "example": true
+            },
+            "questions": {
+              "type": "array",
+              "required": true,
+              "minimum": 1,
+              "maximum": 200,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              },
+              "description": "本场问题集合。保存与追加接口传题干字符串数组；详情接口返回Question对象数组，按记录顺序排列。 手工按行拆分或本地Excel解析后的问题数组；每项1～4000字，保留顺序",
+              "原始说明": "手工按行拆分或本地Excel解析后的问题数组；每项1～4000字，保留顺序",
+              "字段说明": "本场问题集合",
+              "字段注释": "保存与追加接口传题干字符串数组；详情接口返回Question对象数组，按记录顺序排列。 手工按行拆分或本地Excel解析后的问题数组；每项1～4000字，保留顺序",
+              "example": [
+                "如何保证缓存一致性？",
+                "请介绍一次项目中遇到的挑战及解决过程。"
+              ],
+              "minItems": 1,
+              "maxItems": 200
+            }
+          },
+          "返回参数": {
+            "interview": {
+              "ref": "Interview",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "单场面试信息",
+              "字段注释": "公司、岗位、日期、公开状态及题数的完整摘要。",
+              "description": "单场面试信息。公司、岗位、日期、公开状态及题数的完整摘要。"
+            },
+            "question_ids": {
+              "type": "array",
+              "required": true,
+              "items": "string",
+              "原始说明": "",
+              "字段说明": "本次创建的题目编号列表",
+              "字段注释": "顺序与提交题干一致，供前端定位新保存的问题。",
+              "description": "本次创建的题目编号列表。顺序与提交题干一致，供前端定位新保存的问题。"
+            },
+            "classification_status": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "pending",
+                "succeeded"
+              ],
+              "原始说明": "",
+              "字段说明": "自动分类处理状态",
+              "字段注释": "pending=等待识别，succeeded=识别完成，failed=识别失败；失败不影响已保存题目的查看。",
+              "description": "自动分类处理状态。pending=等待识别，succeeded=识别完成，failed=识别失败；失败不影响已保存题目的查看。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "面试记录已保存",
+            "request_id": "req_save",
+            "data": {
+              "interview": {
+                "id": "i1",
+                "company": "字节跳动",
+                "role": "待补充职位",
+                "interview_date": "2026-10-22",
+                "city": "北京",
+                "salary": "25–40K",
+                "status": "recorded",
+                "is_public": true,
+                "question_count": 2
+              },
+              "question_ids": [
+                "q1",
+                "q2"
+              ],
+              "classification_status": "pending"
+            }
+          },
+          "成功HTTP状态": 201,
+          "批注": {
+            "设计思路": "用户填写公司并输入多道题后点击保存，希望整场面试一次保存成功。公司信息和所有题目一起提交，一起成功或一起失败，不会出现只保存公司却丢失部分题目的半成品。",
+            "实现逻辑": "1. 前端把手填的每行题目或Excel“问题”列整理成字符串数组，提交公司、城市、薪资、公开选项和分类方式。\n2. 服务端校验公司必填、题目非空及数量上限，开始事务创建面经并批量写入题目。\n3. 手选类别直接保存；选择自动识别时先存为待分类，再登记后台分类任务，保存操作不必等待AI。\n4. 公开选项保存在面经上，旗下所有题目继承；保存成功关闭弹窗并刷新当前页面，AI分类失败也不丢失原题。",
+            "数据表": [
+              "interviews",
+              "questions",
+              "users",
+              "user_settings",
+              "outbox_events",
+              "idempotency_records"
+            ],
+            "关联关系": "interviews.user_id→users.id；questions.interview_id→interviews.id；公开属性只保存在interviews，题目继承，避免冗余失配",
+            "表关系举例": "例如用户u1记录面经i1，再保存题目q1和q2：interviews.user_id=u1，questions.interview_id=i1。一场面试有多道题，每道题只属于一场面试；公开属性由面经统一决定。"
+          },
+          "请求示例": {
+            "company": "字节跳动",
+            "city": "北京",
+            "salary": "25–40K",
+            "category_mode": "auto",
+            "is_public": true,
+            "questions": [
+              "如何保证缓存一致性？",
+              "请介绍一次项目中遇到的挑战及解决过程。"
+            ]
+          },
+          "接入流程": [
+            "GET /api/v1/pages/interviews同时绑定统计和卡片，统计覆盖全部记录；列表增加加载更多，不能用本页条数计算总场数。",
+            "点击卡片GET /api/v1/interviews/{interview_id}获取真实详情；绑定interview、summary、questions，禁止使用公开题库切片补题。",
+            "记录面试弹窗只提交现有输入：company、city、salary、category_mode、is_public、questions；role与interview_date可不传，由后端填默认职位与用户当地日期。手填按行拆题，Excel浏览器解析后提交同一种字符串数组。",
+            "所有题目一次提交；网络失败保留表单并复用幂等键重试，只有保存成功才关闭及重置。全局弹窗保存后使首页、题库、面经列表和详情缓存失效，切回相关页面重新GET。",
+            "保存或追加返回pending时按当前interview_id有限轮询已有详情，2秒起、最长5秒，最长2分钟；逐题classification_status没有pending后停止。failed的题目保留原文及待分类标签，允许后续手动刷新。",
+            "补充问题入口先增加输入与提交界面，再POST追加数组；成功刷新详情和相关统计。后台分类结束后失效首页、题库及统计缓存；本地其他页面标记过期，下一次进入时重取。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "IDEMPOTENCY_CONFLICT",
+              "message": "同一个幂等键不能提交不同内容",
+              "request_id": "req_idempotency_conflict",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "IDEMPOTENCY_IN_PROGRESS",
+              "message": "原请求仍在处理中，请使用同一幂等键稍后重试",
+              "request_id": "req_idempotency_in_progress",
+              "data": null
+            }
+          ]
+        },
+        {
+          "接口名称": "批量补充本场面试问题",
+          "对应功能模块": "面经详情补充问题按钮（当前占位）",
+          "请求方式": "POST",
+          "路径": "/api/v1/interviews/{interview_id}/questions",
+          "请求参数": {
+            "interview_id": {
+              "type": "string",
+              "required": true,
+              "位置": "path",
+              "原始说明": "",
+              "字段说明": "所属面试记录编号",
+              "字段注释": "必填、非空的资源编号；按路径替换，不放入请求体，不接受null。",
+              "description": "所属面试记录编号。必填、非空的资源编号；按路径替换，不放入请求体，不接受null。",
+              "example": "i1",
+              "minLength": 1
+            },
+            "category_mode": {
+              "type": "string",
+              "required": true,
+              "位置": "body",
+              "enum": [
+                "auto",
+                "technical",
+                "hr"
+              ],
+              "原始说明": "",
+              "字段说明": "题目分类方式",
+              "字段注释": "auto=后台自动识别每道题；technical或hr表示本次提交的题目统一按指定类别保存。",
+              "description": "题目分类方式。auto=后台自动识别每道题；technical或hr表示本次提交的题目统一按指定类别保存。",
+              "example": "auto"
+            },
+            "questions": {
+              "type": "array",
+              "required": true,
+              "位置": "body",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 4000
+              },
+              "description": "本场问题集合。保存与追加接口传题干字符串数组；详情接口返回Question对象数组，按记录顺序排列。 至少1道；追加后单场最多200道",
+              "原始说明": "至少1道；追加后单场最多200道",
+              "字段说明": "本场问题集合",
+              "字段注释": "保存与追加接口传题干字符串数组；详情接口返回Question对象数组，按记录顺序排列。 至少1道；追加后单场最多200道",
+              "example": [
+                "如何保证缓存一致性？",
+                "请介绍一次项目中遇到的挑战及解决过程。"
+              ],
+              "minItems": 1,
+              "maxItems": 200
+            }
+          },
+          "返回参数": {
+            "question_ids": {
+              "type": "array",
+              "required": true,
+              "items": "string",
+              "原始说明": "",
+              "字段说明": "本次创建的题目编号列表",
+              "字段注释": "顺序与提交题干一致，供前端定位新保存的问题。",
+              "description": "本次创建的题目编号列表。顺序与提交题干一致，供前端定位新保存的问题。"
+            },
+            "question_count": {
+              "type": "integer",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "题目总数",
+              "字段注释": "本场面试实际保存的题目数量，包含尚未自动分类的题目。",
+              "description": "题目总数。本场面试实际保存的题目数量，包含尚未自动分类的题目。"
+            },
+            "classification_status": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "pending",
+                "succeeded"
+              ],
+              "原始说明": "",
+              "字段说明": "自动分类处理状态",
+              "字段注释": "pending=等待识别，succeeded=识别完成，failed=识别失败；失败不影响已保存题目的查看。",
+              "description": "自动分类处理状态。pending=等待识别，succeeded=识别完成，failed=识别失败；失败不影响已保存题目的查看。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "问题已补充",
+            "request_id": "req_append",
+            "data": {
+              "question_ids": [
+                "q3",
+                "q4"
+              ],
+              "question_count": 4,
+              "classification_status": "pending"
+            }
+          },
+          "成功HTTP状态": 201,
+          "批注": {
+            "设计思路": "用户复盘时可能想起漏记的题，需要给已有面试补充多道题。一次提交一组题目，沿用原面经的公司和公开状态，不再重新创建一场面试。",
+            "实现逻辑": "1. 检查当前用户拥有这场面经，并校验新增题目内容。\n2. 锁定面经记录，检查加上已有题目后不超过200道，避免两个同时追加的请求突破限制。\n3. 给新增题目依次分配位置并一次写入；自动分类时登记后台任务。\n4. 返回新增题目编号和最终题数，页面刷新详情后即可显示新题与更新后的统计。",
+            "数据表": [
+              "interviews",
+              "questions",
+              "outbox_events",
+              "idempotency_records"
+            ],
+            "关联关系": "新questions.interview_id指向已有interviews.id，自动继承面经公开状态，禁止跨用户追加",
+            "表关系举例": "例如用户u1记录面经i1，再保存题目q1和q2：interviews.user_id=u1，questions.interview_id=i1。一场面试有多道题，每道题只属于一场面试；公开属性由面经统一决定。"
+          },
+          "请求示例": {
+            "interview_id": "i1",
+            "category_mode": "auto",
+            "questions": [
+              "如何保证缓存一致性？",
+              "请介绍一次项目中遇到的挑战及解决过程。"
+            ]
+          },
+          "接入流程": [
+            "GET /api/v1/pages/interviews同时绑定统计和卡片，统计覆盖全部记录；列表增加加载更多，不能用本页条数计算总场数。",
+            "点击卡片GET /api/v1/interviews/{interview_id}获取真实详情；绑定interview、summary、questions，禁止使用公开题库切片补题。",
+            "记录面试弹窗只提交现有输入：company、city、salary、category_mode、is_public、questions；role与interview_date可不传，由后端填默认职位与用户当地日期。手填按行拆题，Excel浏览器解析后提交同一种字符串数组。",
+            "所有题目一次提交；网络失败保留表单并复用幂等键重试，只有保存成功才关闭及重置。全局弹窗保存后使首页、题库、面经列表和详情缓存失效，切回相关页面重新GET。",
+            "保存或追加返回pending时按当前interview_id有限轮询已有详情，2秒起、最长5秒，最长2分钟；逐题classification_status没有pending后停止。failed的题目保留原文及待分类标签，允许后续手动刷新。",
+            "补充问题入口先增加输入与提交界面，再POST追加数组；成功刷新详情和相关统计。后台分类结束后失效首页、题库及统计缓存；本地其他页面标记过期，下一次进入时重取。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            },
+            {
+              "http_status": 404,
+              "code": "RESOURCE_NOT_FOUND",
+              "message": "记录不存在或当前用户不可见",
+              "request_id": "req_resource_not_found",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "IDEMPOTENCY_CONFLICT",
+              "message": "同一个幂等键不能提交不同内容",
+              "request_id": "req_idempotency_conflict",
+              "data": null
+            },
+            {
+              "http_status": 409,
+              "code": "IDEMPOTENCY_IN_PROGRESS",
+              "message": "原请求仍在处理中，请使用同一幂等键稍后重试",
+              "request_id": "req_idempotency_in_progress",
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "模块": "设置",
+      "接口": [
+        {
+          "接口名称": "获取个人设置页",
+          "对应功能模块": "姓名、求职方向、目标城市、消息通知",
+          "请求方式": "GET",
+          "路径": "/api/v1/pages/settings",
+          "请求参数": {},
+          "返回参数": {
+            "name": {
+              "type": "string",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "显示名称",
+              "字段注释": "用于页面展示；个人资料中表示姓名，简历模型中表示原始文件名。",
+              "description": "显示名称。用于页面展示；个人资料中表示姓名，简历模型中表示原始文件名。"
+            },
+            "job_direction": {
+              "type": "string",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "求职方向",
+              "字段注释": "侧栏和设置页展示的岗位方向，例如Java后端开发。",
+              "description": "求职方向。侧栏和设置页展示的岗位方向，例如Java后端开发。"
+            },
+            "target_cities": {
+              "type": "array",
+              "required": true,
+              "items": "string",
+              "原始说明": "",
+              "字段说明": "目标求职城市",
+              "字段注释": "字符串数组，例如[\"北京\",\"杭州\"]；保存前去重。",
+              "description": "目标求职城市。字符串数组，例如[\"北京\",\"杭州\"]；保存前去重。"
+            },
+            "notification_preference": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "important",
+                "all",
+                "off"
+              ],
+              "原始说明": "",
+              "字段说明": "消息提醒偏好",
+              "字段注释": "important=仅重要消息，all=全部消息，off=关闭消息。",
+              "description": "消息提醒偏好。important=仅重要消息，all=全部消息，off=关闭消息。"
+            },
+            "timezone": {
+              "type": "string",
+              "required": true,
+              "description": "用户所在时区。IANA时区名，例如Asia/Shanghai，用于日期和月统计；当前设置页不提供修改入口。 IANA时区，用于日期与月统计；当前页面无编辑项",
+              "原始说明": "IANA时区，用于日期与月统计；当前页面无编辑项",
+              "字段说明": "用户所在时区",
+              "字段注释": "IANA时区名，例如Asia/Shanghai，用于日期和月统计；当前设置页不提供修改入口。 IANA时区，用于日期与月统计；当前页面无编辑项"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "成功",
+            "request_id": "req_settings",
+            "data": {
+              "name": "林知远",
+              "job_direction": "Java 后端开发",
+              "target_cities": [
+                "北京",
+                "杭州",
+                "上海"
+              ],
+              "notification_preference": "important",
+              "timezone": "Asia/Shanghai"
+            }
+          },
+          "批注": {
+            "设计思路": "用户进入设置页时，需要把已有姓名、求职方向、目标城市和消息偏好填入表单。这些字段虽保存在两张表里，对页面而言仍是一份资料，所以一个接口一起返回。",
+            "实现逻辑": "1. 从users读取姓名和求职方向。\n2. 从user_settings读取目标城市、消息偏好和时区；没有设置记录时补默认值。\n3. 把两张表的数据合成一份表单数据返回，城市用数组而不是用顿号拼接的字符串。\n4. 前端将数组显示为可编辑城市列表，并把偏好枚举翻译成“重要消息”“全部消息”或“关闭”。",
+            "数据表": [
+              "users",
+              "user_settings"
+            ],
+            "关联关系": "user_settings.user_id为主键并外键关联users.id，形成1:1关系",
+            "表关系举例": "例如用户编号为u1，users.id=u1，user_settings.user_id也为u1。users保存姓名和岗位方向，user_settings保存同一个人的城市与提醒偏好。"
+          },
+          "请求示例": {},
+          "接入流程": [
+            "GET /api/v1/pages/settings后绑定四个真实表单字段；timezone只读，不提交。PATCH至少传一个可编辑字段，传入字段必须合法，未传字段保留。",
+            "城市输入拆为数组并去重，消息选项转成枚举。保存成功用返回值更新表单及共享姓名和岗位，失败保留输入，禁止只显示保存成功提示。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            }
+          ]
+        },
+        {
+          "接口名称": "保存个人资料与偏好",
+          "对应功能模块": "设置页保存设置",
+          "请求方式": "PATCH",
+          "路径": "/api/v1/me/settings",
+          "请求参数": {
+            "name": {
+              "type": "string",
+              "required": false,
+              "description": "显示名称。用于页面展示；个人资料中表示姓名，简历模型中表示原始文件名。 1～50字",
+              "原始说明": "1～50字",
+              "字段说明": "显示名称",
+              "字段注释": "用于页面展示；个人资料中表示姓名，简历模型中表示原始文件名。 1～50字",
+              "example": "林知远",
+              "minLength": 1,
+              "maxLength": 50
+            },
+            "job_direction": {
+              "type": "string",
+              "required": false,
+              "description": "求职方向。侧栏和设置页展示的岗位方向，例如Java后端开发。 最多100字",
+              "原始说明": "最多100字",
+              "字段说明": "求职方向",
+              "字段注释": "侧栏和设置页展示的岗位方向，例如Java后端开发。 最多100字",
+              "example": "Java 后端开发",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "target_cities": {
+              "type": "array",
+              "required": false,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 50
+              },
+              "description": "目标求职城市。字符串数组，例如[\"北京\",\"杭州\"]；保存前去重。 最多20项，每项1～50字",
+              "原始说明": "最多20项，每项1～50字",
+              "字段说明": "目标求职城市",
+              "字段注释": "字符串数组，例如[\"北京\",\"杭州\"]；保存前去重。 最多20项，每项1～50字",
+              "example": [
+                "北京",
+                "杭州"
+              ],
+              "minItems": 0,
+              "maxItems": 20,
+              "uniqueItems": true
+            },
+            "notification_preference": {
+              "type": "string",
+              "required": false,
+              "enum": [
+                "important",
+                "all",
+                "off"
+              ],
+              "原始说明": "",
+              "字段说明": "消息提醒偏好",
+              "字段注释": "important=仅重要消息，all=全部消息，off=关闭消息。",
+              "description": "消息提醒偏好。important=仅重要消息，all=全部消息，off=关闭消息。",
+              "example": "important"
+            },
+            "约束": "至少提交一个字段；未提交字段保持原值"
+          },
+          "返回参数": {
+            "name": {
+              "type": "string",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "显示名称",
+              "字段注释": "用于页面展示；个人资料中表示姓名，简历模型中表示原始文件名。",
+              "description": "显示名称。用于页面展示；个人资料中表示姓名，简历模型中表示原始文件名。"
+            },
+            "job_direction": {
+              "type": "string",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "求职方向",
+              "字段注释": "侧栏和设置页展示的岗位方向，例如Java后端开发。",
+              "description": "求职方向。侧栏和设置页展示的岗位方向，例如Java后端开发。"
+            },
+            "target_cities": {
+              "type": "array",
+              "required": true,
+              "items": "string",
+              "原始说明": "",
+              "字段说明": "目标求职城市",
+              "字段注释": "字符串数组，例如[\"北京\",\"杭州\"]；保存前去重。",
+              "description": "目标求职城市。字符串数组，例如[\"北京\",\"杭州\"]；保存前去重。"
+            },
+            "notification_preference": {
+              "type": "string",
+              "required": true,
+              "enum": [
+                "important",
+                "all",
+                "off"
+              ],
+              "原始说明": "",
+              "字段说明": "消息提醒偏好",
+              "字段注释": "important=仅重要消息，all=全部消息，off=关闭消息。",
+              "description": "消息提醒偏好。important=仅重要消息，all=全部消息，off=关闭消息。"
+            },
+            "timezone": {
+              "type": "string",
+              "required": true,
+              "原始说明": "",
+              "字段说明": "用户所在时区",
+              "字段注释": "IANA时区名，例如Asia/Shanghai，用于日期和月统计；当前设置页不提供修改入口。",
+              "description": "用户所在时区。IANA时区名，例如Asia/Shanghai，用于日期和月统计；当前设置页不提供修改入口。"
+            }
+          },
+          "返回示例": {
+            "code": "OK",
+            "message": "设置已保存",
+            "request_id": "req_settings_save",
+            "data": {
+              "name": "林知远",
+              "job_direction": "Java 后端开发",
+              "target_cities": [
+                "北京",
+                "杭州"
+              ],
+              "notification_preference": "important",
+              "timezone": "Asia/Shanghai"
+            }
+          },
+          "批注": {
+            "设计思路": "用户修改资料后点一次保存，姓名和偏好应一起生效。接口只更新提交的字段，未提交的资料保留；返回保存后的完整资料，前端可直接同步侧栏姓名而不用再查一次。",
+            "实现逻辑": "1. 校验字段白名单、姓名长度、城市数量和提醒偏好；城市去掉重复项。\n2. 在一个事务中更新users资料和user_settings偏好，任一步失败则整体撤销。\n3. 如果修改了公开显示的昵称，让相关题目卡片的缓存失效。\n4. 返回最终表单值；当前前端占位输入需要先绑定真实表单状态，再接入此接口。",
+            "数据表": [
+              "users",
+              "user_settings"
+            ],
+            "关联关系": "users.id=user_settings.user_id，更新过程具备原子性",
+            "表关系举例": "例如用户编号为u1，users.id=u1，user_settings.user_id也为u1。users保存姓名和岗位方向，user_settings保存同一个人的城市与提醒偏好。"
+          },
+          "请求示例": {
+            "name": "林知远",
+            "job_direction": "Java 后端开发",
+            "target_cities": [
+              "北京",
+              "杭州"
+            ],
+            "notification_preference": "important"
+          },
+          "接入流程": [
+            "GET /api/v1/pages/settings后绑定四个真实表单字段；timezone只读，不提交。PATCH至少传一个可编辑字段，传入字段必须合法，未传字段保留。",
+            "城市输入拆为数组并去重，消息选项转成枚举。保存成功用返回值更新表单及共享姓名和岗位，失败保留输入，禁止只显示保存成功提示。"
+          ],
+          "请求体约束": {
+            "minProperties": 1
+          },
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "模块": "公共模板下载",
+      "接口": [
+        {
+          "接口名称": "下载标准问题导入模板",
+          "对应功能模块": "批量答题模板、记录面试Excel导入模板",
+          "请求方式": "GET",
+          "路径": "/api/v1/templates/questions",
+          "请求参数": {
+            "format": {
+              "type": "string",
+              "required": false,
+              "enum": [
+                "xlsx",
+                "csv"
+              ],
+              "description": "模板文件格式。xlsx=Excel工作簿，csv=带UTF-8 BOM的文本表格；不传默认xlsx。 默认xlsx；query参数",
+              "原始说明": "默认xlsx；query参数",
+              "字段说明": "模板文件格式",
+              "字段注释": "xlsx=Excel工作簿，csv=带UTF-8 BOM的文本表格；不传默认xlsx。 默认xlsx；query参数",
+              "example": "csv",
+              "default": "xlsx"
+            }
+          },
+          "返回参数": {
+            "body": {
+              "type": "binary",
+              "required": true,
+              "description": "下载文件内容。实际响应为二进制流，示例中的文字仅说明文件内容，不是JSON响应。 首列名为问题，附一条示例；xlsx MIME同结果下载，csv为text/csv;charset=utf-8，含BOM",
+              "原始说明": "首列名为问题，附一条示例；xlsx MIME同结果下载，csv为text/csv;charset=utf-8，含BOM",
+              "字段说明": "下载文件内容",
+              "字段注释": "实际响应为二进制流，示例中的文字仅说明文件内容，不是JSON响应。 首列名为问题，附一条示例；xlsx MIME同结果下载，csv为text/csv;charset=utf-8，含BOM"
+            }
+          },
+          "返回示例": {
+            "http_status": 200,
+            "headers": {
+              "Content-Type": "text/csv;charset=utf-8",
+              "Content-Disposition": "attachment; filename=questions.csv"
+            },
+            "body": "问题\r\n请介绍一下你最有挑战的项目\r\n",
+            "说明": "展示format=csv的可读内容，实际下载包含UTF-8 BOM；响应不套JSON封装"
+          },
+          "批注": {
+            "设计思路": "批量答题和记录面试导入都要求“问题”列，共用一份模板可以避免用户下载到两种互不兼容的表格。模板属于小文件，不需要读取业务数据库。",
+            "实现逻辑": "1. 根据format选择xlsx或csv，未传时默认xlsx。\n2. 生成首列标题“问题”，填入一条示例题，方便用户照着填写。\n3. 以附件形式返回；CSV使用UTF-8 BOM，减少Excel打开中文乱码的可能。\n4. 导入时服务端仍检查表头和内容；模板下载成功不代表用户上传的任意文件都能被接受。",
+            "数据表": [],
+            "关联关系": "无数据库依赖",
+            "表关系举例": "此接口使用固定模板文件，不需要业务数据表，也没有表之间的关联。"
+          },
+          "请求示例": {
+            "format": "csv"
+          },
+          "接入流程": [
+            "两个入口复用GET /api/v1/templates/questions；format默认xlsx，也支持csv。当前弹窗已有本地CSV下载可以保留，只要问题列表头一致。",
+            "成功按文件流保存，失败按JSON错误处理；此接口不要求Idempotency-Key，不读取简历或业务数据表。"
+          ],
+          "请求体约束": {},
+          "错误响应": [
+            {
+              "http_status": 401,
+              "code": "UNAUTHENTICATED",
+              "message": "登录已失效，请重新登录",
+              "request_id": "req_unauthenticated",
+              "data": null
+            },
+            {
+              "http_status": 429,
+              "code": "RATE_LIMITED",
+              "message": "操作过于频繁，请稍后重试",
+              "request_id": "req_rate_limited",
+              "data": null
+            },
+            {
+              "http_status": 503,
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "服务暂时不可用，请稍后重试",
+              "request_id": "req_service_unavailable",
+              "data": null
+            },
+            {
+              "http_status": 400,
+              "code": "INVALID_ARGUMENT",
+              "message": "请求参数不符合要求，请检查字段和取值",
+              "request_id": "req_invalid_argument",
+              "data": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "建议数据表与关联": [
+    {
+      "表": "users",
+      "用途": "用户资料与唯一激活简历指针",
+      "主键": "id",
+      "关键字段": [
+        "name",
+        "job_direction",
+        "active_resume_id(nullable)",
+        "created_at"
+      ],
+      "关联": [
+        "active_resume_id→resumes.id；应用事务校验该简历归本用户所有"
+      ],
+      "约束索引": [
+        "激活指针单值；不在resumes中重复维护is_active"
+      ]
+    },
+    {
+      "表": "user_settings",
+      "用途": "个人偏好",
+      "主键": "user_id",
+      "关键字段": [
+        "target_cities(JSON数组)",
+        "notification_preference",
+        "timezone",
+        "updated_at"
+      ],
+      "关联": [
+        "user_id→users.id，1:1"
+      ]
+    },
+    {
+      "表": "files",
+      "用途": "私有对象存储元数据，不存文件本体",
+      "主键": "id",
+      "关键字段": [
+        "user_id",
+        "object_key",
+        "original_name",
+        "mime_type",
+        "size_bytes",
+        "checksum",
+        "created_at"
+      ],
+      "关联": [
+        "user_id→users.id，用户1:N文件"
+      ],
+      "约束索引": [
+        "object_key唯一；禁止向公开响应暴露存储凭证"
+      ]
+    },
+    {
+      "表": "resumes",
+      "用途": "简历逻辑记录",
+      "主键": "id",
+      "关键字段": [
+        "user_id",
+        "name",
+        "current_version_id",
+        "created_at",
+        "updated_at"
+      ],
+      "关联": [
+        "user_id→users.id",
+        "current_version_id→resume_versions.id，必须属于本简历"
+      ],
+      "约束索引": [
+        "(user_id,created_at,id)支持列表；创建时current_version_id先为空，事务内回填以处理循环外键"
+      ]
+    },
+    {
+      "表": "resume_versions",
+      "用途": "不可变简历版本及解析结果",
+      "主键": "id",
+      "关键字段": [
+        "resume_id",
+        "file_id",
+        "version_number",
+        "parse_status",
+        "parse_error",
+        "parsed_content(JSON)",
+        "tags(JSON数组)",
+        "created_at"
+      ],
+      "关联": [
+        "resume_id→resumes.id，简历1:N版本",
+        "file_id→files.id"
+      ],
+      "约束索引": [
+        "UNIQUE(resume_id,version_number)；解析结果完成后冻结；AI任务只引用确定版本"
+      ]
+    },
+    {
+      "表": "interviews",
+      "用途": "一场面试及其公开属性",
+      "主键": "id",
+      "关键字段": [
+        "user_id",
+        "company_name",
+        "role",
+        "city(nullable)",
+        "salary_text(nullable)",
+        "interview_date",
+        "status",
+        "is_public",
+        "created_at"
+      ],
+      "关联": [
+        "user_id→users.id，用户1:N面经"
+      ],
+      "约束索引": [
+        "(user_id,created_at,id)",
+        "(is_public,created_at,id)；公司当前为输入文本，未引入虚构的公司主数据表"
+      ]
+    },
+    {
+      "表": "questions",
+      "用途": "面经题目，同时作为公开题库来源",
+      "主键": "id",
+      "关键字段": [
+        "interview_id",
+        "text",
+        "position",
+        "category",
+        "level",
+        "classification_status",
+        "views",
+        "created_at"
+      ],
+      "关联": [
+        "interview_id→interviews.id，面经1:N题目"
+      ],
+      "约束索引": [
+        "UNIQUE(interview_id,position)",
+        "(category,created_at,id)；不单独复制public_questions表，避免保存和公开不同步"
+      ]
+    },
+    {
+      "表": "question_views",
+      "用途": "浏览去重及帮助人数统计",
+      "主键": "id",
+      "关键字段": [
+        "question_id",
+        "viewer_user_id",
+        "view_date",
+        "created_at"
+      ],
+      "关联": [
+        "question_id→questions.id",
+        "viewer_user_id→users.id"
+      ],
+      "约束索引": [
+        "UNIQUE(question_id,viewer_user_id,view_date)",
+        "helped_user_count按作者的公开题目关联viewer_user_id去重，排除作者本人"
+      ]
+    },
+    {
+      "表": "ai_answers",
+      "用途": "私人个性化回答及异步状态",
+      "主键": "id",
+      "关键字段": [
+        "user_id",
+        "question_id(nullable)",
+        "question_text_snapshot",
+        "resume_version_id",
+        "status",
+        "content(nullable)",
+        "suggestions(JSON数组)",
+        "error_code(nullable)",
+        "created_at"
+      ],
+      "关联": [
+        "user_id→users.id",
+        "question_id→questions.id，可空以支持自由提问和文件题目",
+        "resume_version_id→resume_versions.id；版本必须属于该用户"
+      ],
+      "约束索引": [
+        "(user_id,created_at,id)；不按question_id全局复用私人答案"
+      ]
+    },
+    {
+      "表": "batch_jobs",
+      "用途": "整份题单异步任务",
+      "主键": "id",
+      "关键字段": [
+        "user_id",
+        "source_file_id",
+        "resume_version_id",
+        "status",
+        "total",
+        "succeeded",
+        "failed",
+        "result_file_id(nullable)",
+        "error_code(nullable)",
+        "created_at"
+      ],
+      "关联": [
+        "user_id→users.id",
+        "source_file_id、result_file_id→files.id",
+        "resume_version_id→resume_versions.id"
+      ],
+      "约束索引": [
+        "(user_id,created_at,id)；计数原子更新，重复执行worker不能重复累加"
+      ]
+    },
+    {
+      "表": "batch_job_items",
+      "用途": "原始表格行与答案映射",
+      "主键": "id",
+      "关键字段": [
+        "job_id",
+        "source_row_number",
+        "original_row(JSON)",
+        "question_text",
+        "answer_id(nullable)",
+        "status",
+        "error_code(nullable)"
+      ],
+      "关联": [
+        "job_id→batch_jobs.id，任务1:N项目",
+        "answer_id→ai_answers.id，可空直到创建答案"
+      ],
+      "约束索引": [
+        "UNIQUE(job_id,source_row_number)",
+        "answer_id非空时唯一；按原始行号导出，不因并发执行打乱顺序"
+      ]
+    },
+    {
+      "表": "outbox_events",
+      "用途": "事务提交后可靠触发解析、分类及AI任务",
+      "主键": "id",
+      "关键字段": [
+        "event_type",
+        "aggregate_id",
+        "payload(JSON)",
+        "status",
+        "retry_count",
+        "next_retry_at",
+        "created_at"
+      ],
+      "关联": [
+        "aggregate_id为事件所属资源ID，按event_type解析，不建立多态物理外键"
+      ],
+      "约束索引": [
+        "(status,next_retry_at)；worker按事件ID去重，超限重试后标记失败并回写业务错误"
+      ]
+    },
+    {
+      "表": "idempotency_records",
+      "用途": "避免用户重复提交创建多份资源",
+      "主键": "id",
+      "关键字段": [
+        "user_id",
+        "route",
+        "idempotency_key",
+        "request_hash",
+        "state",
+        "response_status",
+        "response_body(JSON)",
+        "expires_at"
+      ],
+      "关联": [
+        "user_id→users.id"
+      ],
+      "约束索引": [
+        "UNIQUE(user_id,route,idempotency_key)；按expires_at清理；同键处理中返回409并允许稍后重试"
+      ]
+    }
+  ],
+  "核心业务链路": {
+    "简历驱动回答": "上传简历→保存文件和版本→激活指针切换→异步解析→解析成功→创建回答固定版本→异步生成→查询状态与答案。",
+    "面经分享": "手填或本地Excel提取问题→一次保存面经和题目→异步分类→公开题库按is_public读取→用户生成属于自己的简历回答。",
+    "批量处理": "上传Excel→校验问题列和限制→创建任务与行映射→限流并发生成→汇总成功失败→生成结果文件→授权下载。",
+    "聚合边界": "首屏合并同页面展示数据；不把文件上传、模型调用和文件下载硬塞进首屏聚合。批量任务后台有界并发，查询仅返回任务级进度。"
+  },
+  "验收检查": [
+    "每个页面首屏由一个聚合接口加载主要动态数据；静态侧栏与文案不另建接口。",
+    "所有资源查询与写入验证当前用户归属；公开接口仅暴露公开题目与昵称。",
+    "无简历、待解析、解析失败、AI失败、部分批量失败均有明确状态。",
+    "切换简历不改变已创建任务的版本依据；并发切换后最多一个生效指针。",
+    "保存面经或追加题目失败时整体回滚；相同幂等键重试不重复写入。",
+    "详情不混入其他面经题目；分类统计总和等于题目总数。",
+    "文件超限、伪造扩展名、缺少问题列、空题单、过多行与公式注入得到处理。",
+    "聚合读取采用固定数量查询，记录响应体大小、SQL数量和首屏延迟，按真实数据规模确定性能指标。"
+  ],
+  "模拟数据说明": "示例均为模拟数据，各接口展示不同操作时点：上传返回待解析，页面展示解析成功，保存面经返回待分类，详情展示分类完成；业务上允许null的错误原因、处理中正文和末页游标仍保留null。",
+  "页面字段映射": [
+    [
+      "r.type",
+      "file_type",
+      "按PDF、DOC、DOCX展示，DOC和DOCX共用文档图标"
+    ],
+    [
+      "r.active",
+      "is_active",
+      "切换成功后统一更新选中项；失败保留原生效项"
+    ],
+    [
+      "r.date",
+      "updated_at",
+      "将UTC时间转成本地相对时间，不由后端返回“2天前”"
+    ],
+    [
+      "r.parsed",
+      "parse_status",
+      "替换为四态展示，不能用一个布尔值代表解析中和失败"
+    ],
+    [
+      "q.type / filter",
+      "category",
+      "technical=技术问题；hr=人资问题；unclassified=待分类；全部查询不传category"
+    ],
+    [
+      "q.level",
+      "level",
+      "frequent=高频；advanced=进阶；common=常见；unclassified=待分类"
+    ],
+    [
+      "q.author",
+      "author_name",
+      "公开昵称直接用于发布者文案"
+    ],
+    [
+      "i.date / i.count",
+      "interview_date / question_count",
+      "日期展示为YYYY.MM.DD，题数直接读取question_count"
+    ],
+    [
+      "i.status",
+      "Interview.status",
+      "recorded=已记录；second_round_completed=二面完成；awaiting_result=等待结果；closed=已结束"
+    ],
+    [
+      "initial / color",
+      "company",
+      "前端取公司名首字，按固定哈希选择已有配色，无须补查接口"
+    ],
+    [
+      "姓名、岗位及头像首字",
+      "user.name / user.job_direction",
+      "首页初始化后保存到共享状态；设置保存成功后同步，替换硬编码值"
+    ],
+    [
+      "目标城市输入框",
+      "target_cities",
+      "读取时数组用顿号展示；提交时按中英文逗号、顿号分隔、trim并去重"
+    ],
+    [
+      "消息通知选项",
+      "notification_preference",
+      "重要消息=important；全部消息=all；关闭=off"
+    ],
+    [
+      "面经统计卡片",
+      "stats",
+      "绑定真实返回值；technical_ratio乘100显示百分比，不能继续使用固定8、46、21"
+    ]
+  ],
+  "接入规范": {
+    "首页": [
+      "进入首页仅GET /api/v1/pages/home一次；分别绑定user、active_resume、resumes、public_questions，卡片关联信息已齐全，不再逐卡片补查。",
+      "active_resume是生效来源，null时显示“请先上传并选择简历”，禁止访问.name或回退选中列表第一项；非succeeded时展示等待、解析中或失败提示并禁用AI提交。",
+      "首页自由提问只传question_text创建回答，成功取得answer.id后切到咨询页继续同一任务；不再因进入咨询页重复POST。上传、切换或保存面经成功后使相关摘要失效。"
+    ],
+    "我的简历": [
+      "GET /api/v1/pages/resumes加载首屏；增加“加载更多”，首次不传cursor，后续传next_cursor并按ID追加去重；null时隐藏按钮。",
+      "上传成功后直接加入返回卡片，并同步唯一生效编号；解析状态pending/processing时每3秒刷新对应已加载页，按ID合并变化，不能用第一页覆盖已加载的其他页。",
+      "同时检查active_resume及全部已加载卡片的解析状态；隐藏页面暂停查询，全部终态停止。最长自动等待2分钟，超时显示“仍在处理，可手动刷新”，不把超时当作后台失败。",
+      "切换成功才更新共享生效项，失败保留旧选择；已创建回答保持原resume_version_id，不能改成新简历生成的答案。"
+    ],
+    "AI 面试咨询与查看回答弹窗": [
+      "咨询页GET /api/v1/pages/consultation获取当前简历与建议；自由提问只传question_text，题库或面经入口只传question_id，二者必须且只能传一个。",
+      "点击后立即显示生成中并禁用重复提交；POST成功记录answer.id，首次1秒后查询，随后2、4、5秒退避。queued/running继续，succeeded显示content和suggestions，failed显示error_code及重试按钮。",
+      "自动轮询最多2分钟，达到上限保留任务编号并提供“继续查询”，后台不被取消。401停止所有轮询；429或503延后重试；404终止并提示不可见。",
+      "点击“查看回答”先保留来源页并打开弹窗，只有点击“进入AI咨询”才跳转，同时带上现有任务编号，不重新创建答案。清空、关闭或换题时递增显示序号并停止旧轮询，只接收当前answer.id及显示序号匹配的响应。",
+      "每次有意生成新答案用新Idempotency-Key；网络重试沿用原键和内容。失败任务重试是新操作，用新键重新POST。succeeded的正文必须非空；非成功时content=null；failed时error_code必有值。",
+      "公开题目实际打开时可非阻塞POST浏览事件；面经详情仅interview.is_public=true时发送。浏览失败不影响回答，AI创建接口不再重复计数。"
+    ],
+    "批量答题": [
+      "GET /api/v1/pages/batch-answers一次获取规则、当前简历与latest_job；先检查简历就绪，再POST原始文件创建任务，整个题单只创建一个任务。",
+      "页面需绑定文件选择及拖放事件，补齐处理中、成功、部分失败、失败和下载入口；POST返回后保存job.id，每2秒查询一次并逐步退避至10秒。",
+      "queued/running持续查询；最多自动等待10分钟，之后保留任务并提示手动刷新；隐藏页面暂停，重新进入用latest_job恢复。只查询任务，不逐题请求。",
+      "succeeded/partial_failed且download_ready=true才启用下载；全部失败时status=failed且download_ready=false。按任务实际resume_id和resume_version_id显示依据，不把当前生效简历当作旧任务依据。",
+      "统计遵循succeeded+failed<=total；全部终态时等于total。结果文件未准备好仍为running；文件生成失败则failed并记录错误。部分题目失败仍生成含错误原因的XLSX。",
+      "下载成功按Content-Type读取Blob保存文件；非2xx按JSON错误解析，不能将错误响应当作xlsx。401停止，409等待进度，429退避；跨域服务允许Authorization和Idempotency-Key请求头，并暴露Content-Disposition响应头。"
+    ],
+    "公开题库": [
+      "GET /api/v1/pages/question-bank返回分类和卡片；选择全部时省略category。输入关键词延迟300毫秒查询，旧查询结果不得覆盖新查询。",
+      "增加“加载更多”；改变分类或关键词时清空cursor并替换列表；下一页按ID追加去重。不要把中文分类或all传给只接受technical/hr的查询参数。",
+      "打开回答弹窗复用AI流程；不读取或公开发布者的简历及私人答案。公司首字、颜色和枚举中文在前端转换。"
+    ],
+    "我的面经": [
+      "GET /api/v1/pages/interviews同时绑定统计和卡片，统计覆盖全部记录；列表增加加载更多，不能用本页条数计算总场数。",
+      "点击卡片GET /api/v1/interviews/{interview_id}获取真实详情；绑定interview、summary、questions，禁止使用公开题库切片补题。",
+      "记录面试弹窗只提交现有输入：company、city、salary、category_mode、is_public、questions；role与interview_date可不传，由后端填默认职位与用户当地日期。手填按行拆题，Excel浏览器解析后提交同一种字符串数组。",
+      "所有题目一次提交；网络失败保留表单并复用幂等键重试，只有保存成功才关闭及重置。全局弹窗保存后使首页、题库、面经列表和详情缓存失效，切回相关页面重新GET。",
+      "保存或追加返回pending时按当前interview_id有限轮询已有详情，2秒起、最长5秒，最长2分钟；逐题classification_status没有pending后停止。failed的题目保留原文及待分类标签，允许后续手动刷新。",
+      "补充问题入口先增加输入与提交界面，再POST追加数组；成功刷新详情和相关统计。后台分类结束后失效首页、题库及统计缓存；本地其他页面标记过期，下一次进入时重取。"
+    ],
+    "设置": [
+      "GET /api/v1/pages/settings后绑定四个真实表单字段；timezone只读，不提交。PATCH至少传一个可编辑字段，传入字段必须合法，未传字段保留。",
+      "城市输入拆为数组并去重，消息选项转成枚举。保存成功用返回值更新表单及共享姓名和岗位，失败保留输入，禁止只显示保存成功提示。"
+    ],
+    "公共模板下载": [
+      "两个入口复用GET /api/v1/templates/questions；format默认xlsx，也支持csv。当前弹窗已有本地CSV下载可以保留，只要问题列表头一致。",
+      "成功按文件流保存，失败按JSON错误处理；此接口不要求Idempotency-Key，不读取简历或业务数据表。"
+    ]
+  },
+  "修订说明": {
+    "R1": "修复响应Schema重复转换，保留引用及所有层级必返约束。",
+    "R2": "明确采用统一前端适配层，列出字段、枚举、日期及空状态转换；应用代码尚待接入。",
+    "R3": "规定AI、批量、设置及补充问题的页面承接步骤与失败处理；不声称原型已经具备这些界面。",
+    "R4": "规定弹窗保留来源页，任务ID与显示序号共同隔离旧响应。",
+    "R5": "规定列表加载更多、筛选重置和状态轮询按ID合并。",
+    "R6": "补齐二选一、非空提交、字符长度、数组长度、格式、默认值及请求字段白名单。",
+    "R7": "保存示例只提交弹窗现有字段，默认岗位与响应一致。",
+    "R8": "按实际接口分配HTTP错误与业务码，补齐文件下载响应头。",
+    "R9": "规定分类状态查询、跨页缓存失效、共享生效简历同步和幂等重试。"
+  }
+}
